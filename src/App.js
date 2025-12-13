@@ -16,21 +16,25 @@ import Map from './components/Dashboard/Map';
 import Analytics from './components/Dashboard/Analytics';
 import Profile from './components/Dashboard/Profile';
 
-// Dashboard Layout with Sidebar
+// Dashboard Layout with Sidebar - FIXED VERSION
 const DashboardLayout = () => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <Navbar onMenuClick={() => setSidebarOpen(true)} />
+    <div className="flex h-screen bg-gray-50">
+      {/* Sidebar - NO MARGIN */}
+      <Sidebar 
+        isOpen={sidebarOpen} 
+        onClose={() => setSidebarOpen(false)} 
+      />
       
-      <div className="flex">
-        <Sidebar 
-          isOpen={sidebarOpen} 
-          onClose={() => setSidebarOpen(false)} 
-        />
+      {/* Main Content Area - NO PADDING on wrapper */}
+      <div className="flex-1 flex flex-col overflow-hidden">
+        {/* Navbar */}
+        <Navbar onMenuClick={() => setSidebarOpen(true)} />
         
-        <main className="flex-1 lg:ml-64 p-6">
+        {/* Dashboard Content - Padding ONLY here */}
+        <main className="flex-1 overflow-auto p-6">
           <Outlet />
         </main>
       </div>
