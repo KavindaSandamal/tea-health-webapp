@@ -15,6 +15,7 @@ import History from './components/Dashboard/History';
 import Map from './components/Dashboard/Map';
 import Analytics from './components/Dashboard/Analytics';
 import Profile from './components/Dashboard/Profile';
+import RealtimeScanComponent from './components/Dashboard/RealtimeScanComponent'; 
 
 // Dashboard Layout with Sidebar - FIXED VERSION
 const DashboardLayout = () => {
@@ -66,6 +67,7 @@ function App() {
             <Route path="map" element={<Map />} />
             <Route path="analytics" element={<Analytics />} />
             <Route path="profile" element={<Profile />} />
+            <Route path="realtime" element={<RealtimeScanComponent />} />
           </Route>
 
           {/* Default Route */}

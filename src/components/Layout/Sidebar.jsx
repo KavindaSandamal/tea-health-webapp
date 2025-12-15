@@ -7,13 +7,15 @@ import {
   MapPin, 
   BarChart3, 
   User,
-  X
+  X,
+  Camera
 } from 'lucide-react';
 
 const Sidebar = ({ isOpen, onClose }) => {
   const navItems = [
     { path: '/dashboard', icon: LayoutDashboard, label: 'Dashboard', exact: true },
     { path: '/dashboard/upload', icon: Upload, label: 'New Scan' },
+    { path: '/dashboard/realtime', icon: Camera, label: 'Real-Time Scan' },
     { path: '/dashboard/history', icon: History, label: 'History' },
     { path: '/dashboard/map', icon: MapPin, label: 'Map View' },
     { path: '/dashboard/analytics', icon: BarChart3, label: 'Analytics' },
