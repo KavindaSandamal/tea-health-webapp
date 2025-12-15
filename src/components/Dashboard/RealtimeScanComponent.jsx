@@ -1,527 +1,733 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { useAuth } from '../../context/AuthContext';
-import { saveScan, createGeoPoint } from '../../firebase/firestore';
-import { compressImage } from '../../utils/imageUtils';
-import { toast } from 'react-toastify';
-import { Upload, Camera, X, MapPin, Loader, AlertTriangle, CheckCircle, Video, Image, Download } from 'lucide-react';
+import { 
+  Camera, 
+  X, 
+  Loader,
+  AlertTriangle,
+  CheckCircle,
+  RefreshCw,
+  Download,
+  Scan,
+  Smartphone,
+  Maximize,
+  Minimize,
+  Info,
+  Wifi,
+  WifiOff
+} from 'lucide-react';
 
-const ImprovedUploadComponent = () => {
-  const { currentUser } = useAuth();
-  const [selectedFile, setSelectedFile] = useState(null);
-  const [fileType, setFileType] = useState(null);
-  const [preview, setPreview] = useState(null);
-  const [extractedFrame, setExtractedFrame] = useState(null);
-  const [detecting, setDetecting] = useState(false);
+const EnhancedRealtimeScan = () => {
+  const [isScanning, setIsScanning] = useState(false);
+  const [isPaused, setIsPaused] = useState(false);
+  const [isDetecting, setIsDetecting] = useState(false);
   const [result, setResult] = useState(null);
   const [location, setLocation] = useState(null);
-  const [imageDimensions, setImageDimensions] = useState({ width: 0, height: 0 });
-  const [uploadMode, setUploadMode] = useState('image');
-  const [imageWithBoundingBoxes, setImageWithBoundingBoxes] = useState(null);
-  const [saving, setSaving] = useState(false);
+  const [capturedImage, setCapturedImage] = useState(null);
+  const [capturedImageWithBoxes, setCapturedImageWithBoxes] = useState(null);
+  const [fps, setFps] = useState(0);
+  const [cameraError, setCameraError] = useState(null);
+  const [isMobile, setIsMobile] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [showInstructions, setShowInstructions] = useState(true);
+  const [apiStatus, setApiStatus] = useState('checking');
   
-  const fileInputRef = useRef(null);
-  const imageRef = useRef(null);
   const videoRef = useRef(null);
-  const boundingBoxCanvasRef = useRef(null);
+  const canvasRef = useRef(null);
+  const overlayCanvasRef = useRef(null);
+  const streamRef = useRef(null);
+  const animationRef = useRef(null);
+  const isScanningRef = useRef(false);
+  const lastDetectionTime = useRef(0);
+  const fpsCounter = useRef({ frames: 0, lastTime: Date.now() });
+  const detectionHistoryRef = useRef([]);
+  const containerRef = useRef(null);
 
   useEffect(() => {
+    const checkMobile = () => {
+      const mobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+      setIsMobile(mobile);
+      return mobile;
+    };
+    
+    checkMobile();
+
+    // Check API status
+    checkApiHealth();
+
     if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
-        (position) => setLocation({ lat: position.coords.latitude, lng: position.coords.longitude }),
-        (error) => console.error('Location error:', error)
+        (position) => {
+          setLocation({
+            lat: position.coords.latitude,
+            lng: position.coords.longitude,
+          });
+        },
+        (error) => console.error('Error getting location:', error)
       );
     }
+
+    return () => {
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => track.stop());
+        streamRef.current = null;
+      }
+      if (animationRef.current) {
+        cancelAnimationFrame(animationRef.current);
+        animationRef.current = null;
+      }
+      isScanningRef.current = false;
+    };
   }, []);
 
-  useEffect(() => {
-    if (result && imageRef.current && imageDimensions.width > 0) {
-      setTimeout(() => {
-        drawBoundingBoxes();
-        generateImageWithBoundingBoxes();
-      }, 100);
+  const checkApiHealth = async () => {
+    try {
+      const response = await fetch('https://d5365df2e6a6.ngrok-free.app/health', {
+        method: 'GET',
+      });
+      setApiStatus(response.ok ? 'online' : 'offline');
+    } catch (error) {
+      setApiStatus('offline');
     }
-  }, [result, imageDimensions]);
-
-  const handleFileSelect = (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-
-    const isImage = file.type.startsWith('image/');
-    const isVideo = file.type.startsWith('video/');
-
-    if (!isImage && !isVideo) {
-      toast.error('Please select an image or video file');
-      return;
-    }
-
-    setSelectedFile(file);
-    setFileType(isImage ? 'image' : 'video');
-    setPreview(URL.createObjectURL(file));
-    setExtractedFrame(null);
-    setResult(null);
-    setImageDimensions({ width: 0, height: 0 });
-    setImageWithBoundingBoxes(null);
   };
 
-  const drawBoundingBoxes = () => {
-    const canvas = boundingBoxCanvasRef.current;
-    const img = imageRef.current;
-    if (!canvas || !img || !result) return;
+  const startCamera = async () => {
+    setCameraError(null);
+    
+    try {
+      const constraints = {
+        video: {
+          facingMode: { ideal: 'environment' },
+          width: isMobile ? { ideal: 1280 } : { ideal: 1920 },
+          height: isMobile ? { ideal: 720 } : { ideal: 1080 },
+          aspectRatio: { ideal: 16/9 }
+        },
+        audio: false
+      };
 
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      
+      streamRef.current = stream;
+      setIsScanning(true);
+      isScanningRef.current = true;
+      
+      await new Promise(resolve => setTimeout(resolve, 100));
+      
+      if (!videoRef.current) {
+        throw new Error('Video element not ready');
+      }
+
+      const video = videoRef.current;
+      video.srcObject = stream;
+      video.setAttribute('playsinline', 'true');
+      video.setAttribute('webkit-playsinline', 'true');
+      
+      await video.play();
+      
+      setTimeout(() => {
+        startDetectionLoop();
+      }, 100);
+      
+    } catch (error) {
+      console.error('Camera access error:', error);
+      let errorMessage = 'Failed to access camera. ';
+      
+      if (error.name === 'NotAllowedError') {
+        errorMessage += 'Please allow camera permissions in your browser settings.';
+      } else if (error.name === 'NotFoundError') {
+        errorMessage += 'No camera found on your device.';
+      } else if (error.name === 'NotReadableError') {
+        errorMessage += 'Camera is already in use by another application.';
+      } else {
+        errorMessage += error.message || 'Unknown error occurred.';
+      }
+      
+      setCameraError(errorMessage);
+      setIsScanning(false);
+      isScanningRef.current = false;
+    }
+  };
+
+  const stopCamera = () => {
+    isScanningRef.current = false;
+    
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => track.stop());
+      streamRef.current = null;
+    }
+    
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
+    
+    if (animationRef.current) {
+      cancelAnimationFrame(animationRef.current);
+      animationRef.current = null;
+    }
+    
+    setIsScanning(false);
+    setIsPaused(false);
+    setResult(null);
+    setIsFullscreen(false);
+    detectionHistoryRef.current = [];
+    
+    if (document.fullscreenElement) {
+      document.exitFullscreen();
+    }
+  };
+
+  const toggleFullscreen = async () => {
+    if (!containerRef.current) return;
+
+    try {
+      if (!document.fullscreenElement) {
+        await containerRef.current.requestFullscreen();
+        setIsFullscreen(true);
+      } else {
+        await document.exitFullscreen();
+        setIsFullscreen(false);
+      }
+    } catch (error) {
+      console.error('Fullscreen error:', error);
+    }
+  };
+
+  const startDetectionLoop = () => {
+    const detectFrame = async () => {
+      if (!isScanningRef.current || isPaused) {
+        if (isScanningRef.current) {
+          animationRef.current = requestAnimationFrame(detectFrame);
+        }
+        return;
+      }
+
+      const now = Date.now();
+      const detectionInterval = isMobile ? 2000 : 1500;
+      
+      if (now - lastDetectionTime.current > detectionInterval) {
+        await performDetection();
+        lastDetectionTime.current = now;
+      }
+
+      fpsCounter.current.frames++;
+      if (now - fpsCounter.current.lastTime > 1000) {
+        setFps(fpsCounter.current.frames);
+        fpsCounter.current.frames = 0;
+        fpsCounter.current.lastTime = now;
+      }
+
+      animationRef.current = requestAnimationFrame(detectFrame);
+    };
+
+    detectFrame();
+  };
+
+  const performDetection = async () => {
+    if (!videoRef.current || !canvasRef.current || isDetecting) return;
+
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
     const ctx = canvas.getContext('2d');
-    canvas.width = img.offsetWidth;
-    canvas.height = img.offsetHeight;
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    if (video.readyState !== video.HAVE_ENOUGH_DATA) return;
+
+    setIsDetecting(true);
+
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+    canvas.toBlob(async (blob) => {
+      if (!blob) {
+        setIsDetecting(false);
+        return;
+      }
+
+      try {
+        const file = new File([blob], 'frame.jpg', { type: 'image/jpeg' });
+        const formData = new FormData();
+        formData.append('image', file);
+
+        const response = await fetch('https://d5365df2e6a6.ngrok-free.app/predict', {
+          method: 'POST',
+          body: formData,
+        });
+
+        if (!response.ok) {
+          setApiStatus('offline');
+          setIsDetecting(false);
+          return;
+        }
+
+        setApiStatus('online');
+        const data = await response.json();
+        
+        if (data.success) {
+          detectionHistoryRef.current.push(data);
+          if (detectionHistoryRef.current.length > 3) {
+            detectionHistoryRef.current.shift();
+          }
+          
+          const stableResult = getMostConsistentResult(detectionHistoryRef.current);
+          setResult(stableResult);
+          drawBoundingBoxes(stableResult);
+        }
+      } catch (error) {
+        console.error('Detection error:', error);
+        setApiStatus('offline');
+      } finally {
+        setIsDetecting(false);
+      }
+    }, 'image/jpeg', isMobile ? 0.7 : 0.8);
+  };
+
+  const getMostConsistentResult = (history) => {
+    if (history.length === 0) return null;
+    if (history.length < 2) return history[history.length - 1];
+    
+    const latest = history[history.length - 1];
+    const allDiseases = new Map();
+    
+    history.forEach(detection => {
+      if (detection.diseases) {
+        detection.diseases.forEach(disease => {
+          const key = disease.disease.toLowerCase();
+          if (!allDiseases.has(key) || allDiseases.get(key).confidence < disease.confidence) {
+            allDiseases.set(key, disease);
+          }
+        });
+      }
+    });
+    
+    return {
+      ...latest,
+      diseases: Array.from(allDiseases.values()).sort((a, b) => b.confidence - a.confidence)
+    };
+  };
+
+  const drawBoundingBoxes = (data) => {
+    const overlay = overlayCanvasRef.current;
+    const video = videoRef.current;
+    
+    if (!overlay || !video) return;
+
+    const ctx = overlay.getContext('2d');
+    
+    const displayWidth = video.offsetWidth;
+    const displayHeight = video.offsetHeight;
+    
+    overlay.width = displayWidth;
+    overlay.height = displayHeight;
+    ctx.clearRect(0, 0, overlay.width, overlay.height);
 
     const YOLO_SIZE = 640;
-    const scaleX = canvas.width / YOLO_SIZE;
-    const scaleY = canvas.height / YOLO_SIZE;
+    const scaleX = displayWidth / YOLO_SIZE;
+    const scaleY = displayHeight / YOLO_SIZE;
 
-    const allDetections = [
-      ...(Array.isArray(result.diseases) ? result.diseases : []),
-      ...(Array.isArray(result.deficiencies) ? result.deficiencies : [])
-    ];
+    const diseases = Array.isArray(data.diseases) ? data.diseases : [];
+    const deficiencies = Array.isArray(data.deficiencies) ? data.deficiencies : [];
+    const allDetections = [...diseases, ...deficiencies];
 
     allDetections.forEach((detection) => {
-      if (!detection?.bbox) return;
+      if (!detection || !detection.bbox) return;
 
-      let bbox = Array.isArray(detection.bbox) ? detection.bbox :
-        ('x1' in detection.bbox) ? [detection.bbox.x1, detection.bbox.y1, detection.bbox.x2, detection.bbox.y2] : null;
+      let bbox;
+      if (Array.isArray(detection.bbox)) {
+        bbox = detection.bbox;
+      } else if (typeof detection.bbox === 'object' && 'x1' in detection.bbox) {
+        bbox = [detection.bbox.x1, detection.bbox.y1, detection.bbox.x2, detection.bbox.y2];
+      }
 
       if (!bbox || bbox.length !== 4) return;
 
       const [x1, y1, x2, y2] = bbox;
+      const scaledX1 = x1 * scaleX;
+      const scaledY1 = y1 * scaleY;
+      const scaledX2 = x2 * scaleX;
+      const scaledY2 = y2 * scaleY;
+      const width = scaledX2 - scaledX1;
+      const height = scaledY2 - scaledY1;
+
       const color = getBoxColor(detection.disease);
 
       ctx.strokeStyle = color;
-      ctx.lineWidth = 3;
-      ctx.strokeRect(x1 * scaleX, y1 * scaleY, (x2 - x1) * scaleX, (y2 - y1) * scaleY);
+      ctx.lineWidth = isMobile ? 4 : 3;
+      ctx.strokeRect(scaledX1, scaledY1, width, height);
 
       const label = `${detection.disease} ${(detection.confidence * 100).toFixed(0)}%`;
-      ctx.font = 'bold 14px Arial';
-      const textWidth = ctx.measureText(label).width;
+      ctx.font = isMobile ? 'bold 16px Arial' : 'bold 14px Arial';
+      const textMetrics = ctx.measureText(label);
+      const padding = isMobile ? 6 : 5;
+      const textHeight = isMobile ? 24 : 20;
 
       ctx.fillStyle = color;
-      ctx.fillRect(x1 * scaleX, y1 * scaleY - 25, textWidth + 10, 25);
+      ctx.fillRect(scaledX1, scaledY1 - textHeight - padding, textMetrics.width + padding * 2, textHeight + padding);
+
       ctx.fillStyle = 'white';
-      ctx.fillText(label, x1 * scaleX + 5, y1 * scaleY - 7);
+      ctx.fillText(label, scaledX1 + padding, scaledY1 - padding - 3);
     });
-  };
-
-  const generateImageWithBoundingBoxes = () => {
-    const img = imageRef.current;
-    const overlayCanvas = boundingBoxCanvasRef.current;
-    if (!img || !overlayCanvas || !result) return;
-
-    const mergedCanvas = document.createElement('canvas');
-    mergedCanvas.width = img.naturalWidth;
-    mergedCanvas.height = img.naturalHeight;
-    const ctx = mergedCanvas.getContext('2d');
-    
-    // Draw original image
-    ctx.drawImage(img, 0, 0);
-    
-    // Scale and draw bounding boxes overlay
-    const scaleX = img.naturalWidth / img.offsetWidth;
-    const scaleY = img.naturalHeight / img.offsetHeight;
-    ctx.save();
-    ctx.scale(scaleX, scaleY);
-    ctx.drawImage(overlayCanvas, 0, 0);
-    ctx.restore();
-    
-    // Convert to base64
-    const imageWithBoxes = mergedCanvas.toDataURL('image/jpeg', 0.95);
-    setImageWithBoundingBoxes(imageWithBoxes);
-    console.log('✓ Image with bounding boxes generated');
   };
 
   const getBoxColor = (disease) => {
-    const colors = {
-      'black blight': '#1f2937', 'blister blight': '#dc2626', 'brown blight': '#ea580c',
-      'grey blight': '#6b7280', 'healthy': '#16a34a', 'lichen': '#0d9488',
-      'magnesium': '#9333ea', 'nitrogen': '#4f46e5', 'potassium': '#eab308',
-      'sulfur': '#f59e0b', 'redrust': '#f43f5e', 'sunburn': '#f97316', 'mita': '#ec4899'
+    const colorMap = {
+      'black blight': '#1f2937',
+      'blister blight': '#dc2626',
+      'brown blight': '#ea580c',
+      'grey blight': '#6b7280',
+      'healthy': '#16a34a',
+      'lichen': '#0d9488',
+      'magnesium': '#9333ea',
+      'nitrogen': '#4f46e5',
+      'potassium': '#eab308',
+      'sulfur': '#f59e0b',
+      'redrust': '#f43f5e',
+      'sunburn': '#f97316',
+      'mita': '#ec4899',
     };
-    return colors[disease?.toLowerCase()] || '#6b7280';
+    return colorMap[disease?.toLowerCase()] || '#6b7280';
   };
 
-  const extractFrameFromVideo = (videoFile) => {
-    return new Promise((resolve, reject) => {
-      const video = document.createElement('video');
-      video.src = URL.createObjectURL(videoFile);
-      video.muted = true;
-      video.playsInline = true;
+  const captureImageWithBoundingBoxes = () => {
+    if (!videoRef.current || !result) return null;
 
-      video.onloadeddata = () => video.currentTime = Math.min(1, video.duration / 2);
-      video.onseeked = () => {
-        const canvas = document.createElement('canvas');
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
-        canvas.getContext('2d').drawImage(video, 0, 0);
-        canvas.toBlob((blob) => {
-          URL.revokeObjectURL(video.src);
-          resolve({ blob, dataUrl: canvas.toDataURL('image/jpeg', 0.95) });
-        }, 'image/jpeg', 0.95);
-      };
-      video.onerror = () => { URL.revokeObjectURL(video.src); reject(new Error('Video load failed')); };
-      video.load();
+    const video = videoRef.current;
+    
+    // Create a new canvas to merge video + bounding boxes
+    const mergedCanvas = document.createElement('canvas');
+    mergedCanvas.width = video.videoWidth;
+    mergedCanvas.height = video.videoHeight;
+    const ctx = mergedCanvas.getContext('2d');
+    
+    // Draw video frame
+    ctx.drawImage(video, 0, 0, mergedCanvas.width, mergedCanvas.height);
+    
+    // Draw bounding boxes directly on the merged canvas
+    const YOLO_SIZE = 640;
+    const scaleX = mergedCanvas.width / YOLO_SIZE;
+    const scaleY = mergedCanvas.height / YOLO_SIZE;
+
+    const diseases = Array.isArray(result.diseases) ? result.diseases : [];
+    const deficiencies = Array.isArray(result.deficiencies) ? result.deficiencies : [];
+    const allDetections = [...diseases, ...deficiencies];
+
+    allDetections.forEach((detection) => {
+      if (!detection || !detection.bbox) return;
+
+      let bbox;
+      if (Array.isArray(detection.bbox)) {
+        bbox = detection.bbox;
+      } else if (typeof detection.bbox === 'object' && 'x1' in detection.bbox) {
+        bbox = [detection.bbox.x1, detection.bbox.y1, detection.bbox.x2, detection.bbox.y2];
+      }
+
+      if (!bbox || bbox.length !== 4) return;
+
+      const [x1, y1, x2, y2] = bbox;
+      const scaledX1 = x1 * scaleX;
+      const scaledY1 = y1 * scaleY;
+      const scaledX2 = x2 * scaleX;
+      const scaledY2 = y2 * scaleY;
+      const width = scaledX2 - scaledX1;
+      const height = scaledY2 - scaledY1;
+
+      const color = getBoxColor(detection.disease);
+
+      // Draw box
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 4;
+      ctx.strokeRect(scaledX1, scaledY1, width, height);
+
+      // Draw label
+      const label = `${detection.disease} ${(detection.confidence * 100).toFixed(0)}%`;
+      ctx.font = 'bold 20px Arial';
+      const textMetrics = ctx.measureText(label);
+      const padding = 8;
+      const textHeight = 28;
+
+      ctx.fillStyle = color;
+      ctx.fillRect(scaledX1, scaledY1 - textHeight - padding, textMetrics.width + padding * 2, textHeight + padding);
+
+      ctx.fillStyle = 'white';
+      ctx.fillText(label, scaledX1 + padding, scaledY1 - padding - 4);
+    });
+    
+    return mergedCanvas.toDataURL('image/jpeg', 0.95);
+  };
+
+  const captureAndSave = async () => {
+    if (!videoRef.current || !canvasRef.current) return;
+
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext('2d');
+
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    ctx.drawImage(video, 0, 0);
+
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.95);
+    const dataUrlWithBoxes = captureImageWithBoundingBoxes();
+    
+    setCapturedImage(dataUrl);
+    setCapturedImageWithBoxes(dataUrlWithBoxes);
+    setIsPaused(true);
+
+    // Here you would save to your backend
+    console.log('Captured images ready to save:', {
+      original: dataUrl,
+      withBoundingBoxes: dataUrlWithBoxes,
+      result: result
     });
   };
 
-  const getLocationName = async (lat, lng) => {
-    try {
-      const response = await fetch(
-        `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json`
-      );
-      const data = await response.json();
-      return data.display_name || 'Unknown Location';
-    } catch (error) {
-      console.error('Error getting location name:', error);
-      return 'Unknown Location';
-    }
+  const resumeScanning = () => {
+    setCapturedImage(null);
+    setCapturedImageWithBoxes(null);
+    setIsPaused(false);
   };
 
-  const generateLabel = (data) => {
-    if (!data.is_tea_leaf) return 'Not a Tea Leaf';
-    if (data.is_healthy) return 'Healthy';
-
-    const allDetections = [
-      ...(Array.isArray(data.diseases) ? data.diseases : []),
-      ...(Array.isArray(data.deficiencies) ? data.deficiencies : [])
-    ];
-
-    if (allDetections.length === 0) return 'Unknown';
-    allDetections.sort((a, b) => b.confidence - a.confidence);
-    return allDetections[0].disease.charAt(0).toUpperCase() + allDetections[0].disease.slice(1);
-  };
-
-  const calculateOverallConfidence = (data) => {
-    if (!data.is_tea_leaf) return data.tea_confidence;
-    if (data.is_healthy) return data.tea_confidence;
-
-    const allDetections = [
-      ...(Array.isArray(data.diseases) ? data.diseases : []),
-      ...(Array.isArray(data.deficiencies) ? data.deficiencies : [])
-    ];
-
-    if (allDetections.length === 0) return 0;
-    return Math.max(...allDetections.map(d => d.confidence));
-  };
-
-  const detectDisease = async () => {
-    if (!selectedFile) return;
-
-    setDetecting(true);
-    console.log('🔍 Starting detection...');
+  const downloadCapture = () => {
+    if (!capturedImageWithBoxes) return;
     
-    try {
-      let fileToSend = selectedFile;
-
-      if (fileType === 'video') {
-        console.log('🎬 Extracting frame from video...');
-        toast.info('Extracting frame from video...');
-        const { blob, dataUrl } = await extractFrameFromVideo(selectedFile);
-        setExtractedFrame(dataUrl);
-        fileToSend = new File([blob], 'frame.jpg', { type: 'image/jpeg' });
-      }
-
-      const formData = new FormData();
-      formData.append('image', fileToSend);
-
-      console.log('📡 Sending to API...');
-      toast.info('Analyzing image...');
-      const response = await fetch('https://d5365df2e6a6.ngrok-free.app/predict', {
-        method: 'POST',
-        body: formData,
-      });
-
-      if (!response.ok) throw new Error(`API error: ${response.status}`);
-
-      const data = await response.json();
-      console.log('✓ Detection result:', data);
-      
-      if (!data.success) throw new Error(data.error || 'Detection failed');
-
-      const imgElement = imageRef.current;
-      if (imgElement?.naturalWidth > 0) {
-        setImageDimensions({ width: imgElement.naturalWidth, height: imgElement.naturalHeight });
-      }
-
-      setResult(data);
-      toast.success('Detection complete!');
-      
-    } catch (error) {
-      console.error('❌ Detection error:', error);
-      toast.error('Detection failed: ' + error.message);
-    } finally {
-      setDetecting(false);
-    }
-  };
-
-  const downloadImageWithBoxes = () => {
-    if (!imageWithBoundingBoxes) return;
     const link = document.createElement('a');
-    link.href = imageWithBoundingBoxes;
+    link.href = capturedImageWithBoxes;
     link.download = `tea-scan-${Date.now()}.jpg`;
     link.click();
-    toast.success('Image downloaded!');
-  };
-
-  const saveToDatabase = async () => {
-    if (!imageWithBoundingBoxes || !result) {
-      toast.error('Please wait for processing to complete');
-      return;
-    }
-
-    setSaving(true);
-    toast.info('Saving scan...');
-
-    try {
-      const label = generateLabel(result);
-      const confidence = calculateOverallConfidence(result);
-
-      const scanData = {
-        imageB64: imageWithBoundingBoxes, // Image WITH bounding boxes
-        label: label,
-        confidence: confidence,
-        is_tea_leaf: result.is_tea_leaf,
-        tea_confidence: result.tea_confidence,
-        is_healthy: result.is_healthy,
-        total_detections: result.total_detections,
-        diseases: result.diseases || [],
-        deficiencies: result.deficiencies || [],
-        inference_time: result.inference_time,
-        inference_engine: result.inference_engine || 'ONNX',
-        source: fileType,
-        device: /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) ? 'mobile' : 'desktop',
-        locName: location ? await getLocationName(location.lat, location.lng) : 'Unknown',
-        geo: location ? createGeoPoint(location.lat, location.lng) : null,
-      };
-
-      console.log('💾 Saving to database:', scanData);
-      await saveScan(currentUser.uid, scanData);
-      
-      toast.success('Scan saved successfully!');
-      console.log('✓ Scan saved to Firestore');
-      
-    } catch (error) {
-      console.error('❌ Save error:', error);
-      toast.error('Failed to save scan: ' + error.message);
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const reset = () => {
-    setSelectedFile(null);
-    setFileType(null);
-    setPreview(null);
-    setExtractedFrame(null);
-    setResult(null);
-    setImageDimensions({ width: 0, height: 0 });
-    setImageWithBoundingBoxes(null);
-    if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
   return (
-    <div className="max-w-4xl mx-auto space-y-6 px-4">
-      <div>
-        <h1 className="text-3xl font-bold text-gray-900">New Scan</h1>
-        <p className="text-gray-600">Upload image/video to detect tea plant diseases</p>
-      </div>
-
-      <div className="bg-white rounded-xl border border-gray-200 p-4">
-        <div className="flex items-center gap-3">
-          <span className="text-sm font-medium text-gray-700">Upload type:</span>
-          <div className="flex gap-2">
-            {['image', 'video'].map(mode => (
-              <button
-                key={mode}
-                onClick={() => setUploadMode(mode)}
-                className={`flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition ${
-                  uploadMode === mode ? 'bg-green-600 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                }`}
-              >
-                {mode === 'image' ? <Image className="w-4 h-4" /> : <Video className="w-4 h-4" />}
-                {mode.charAt(0).toUpperCase() + mode.slice(1)}
-              </button>
-            ))}
+    <div className="max-w-7xl mx-auto space-y-4 px-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <div className="flex items-center gap-2 mb-1">
+            <h1 className="text-2xl sm:text-3xl font-bold text-gray-900">Real-Time Scanner</h1>
+            {isMobile && <Smartphone className="w-5 h-5 text-green-600" />}
           </div>
+          <p className="text-sm text-gray-600">Point your camera at tea leaves for instant detection</p>
+        </div>
+        
+        <div className="flex items-center gap-2">
+          {apiStatus === 'online' ? (
+            <div className="flex items-center gap-1 text-green-600 text-sm">
+              <Wifi className="w-4 h-4" />
+              <span className="hidden sm:inline">API Online</span>
+            </div>
+          ) : (
+            <div className="flex items-center gap-1 text-red-600 text-sm">
+              <WifiOff className="w-4 h-4" />
+              <span className="hidden sm:inline">API Offline</span>
+            </div>
+          )}
         </div>
       </div>
 
-      <div className="bg-white rounded-xl border border-gray-200 p-8">
-        {!preview ? (
-          <div
-            onClick={() => fileInputRef.current?.click()}
-            className="border-2 border-dashed border-gray-300 rounded-xl p-12 text-center cursor-pointer hover:border-green-500 transition"
-          >
-            {uploadMode === 'image' ? <Upload className="w-16 h-16 text-gray-400 mx-auto mb-4" /> : 
-             <Video className="w-16 h-16 text-gray-400 mx-auto mb-4" />}
-            <h3 className="text-lg font-semibold text-gray-900 mb-2">Upload Tea Leaf {uploadMode === 'image' ? 'Image' : 'Video'}</h3>
-            <p className="text-gray-600 mb-4">Click to browse or drag and drop</p>
-            <p className="text-sm text-gray-500">
-              {uploadMode === 'image' ? 'JPG, PNG (Max 10MB)' : 'MP4, MOV, AVI (Max 50MB)'}
-            </p>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept={uploadMode === 'image' ? 'image/*' : 'video/*'}
-              onChange={handleFileSelect}
-              className="hidden"
-            />
+      {showInstructions && !isScanning && (
+        <div className="bg-blue-50 border border-blue-200 rounded-xl p-4">
+          <div className="flex items-start gap-3">
+            <Info className="w-5 h-5 text-blue-600 flex-shrink-0 mt-0.5" />
+            <div className="flex-1">
+              <h3 className="font-semibold text-blue-900 mb-2">How to use Real-Time Scanner:</h3>
+              <ul className="text-sm text-blue-800 space-y-1 list-disc list-inside">
+                <li>Click "Start Camera" and allow camera permissions</li>
+                <li>Hold your device steady and point at tea leaves</li>
+                <li>Wait for the system to detect diseases (green pulse = scanning)</li>
+                <li>Use fullscreen mode for better viewing experience</li>
+                <li>Click "Capture & Save" when you see detections</li>
+                <li>Saved images will include bounding boxes</li>
+              </ul>
+              <button
+                onClick={() => setShowInstructions(false)}
+                className="text-xs text-blue-600 hover:text-blue-700 mt-2"
+              >
+                Hide instructions
+              </button>
+            </div>
           </div>
-        ) : (
-          <div className="space-y-6">
-            <div className="relative flex justify-center">
-              <div className="relative inline-block">
-                {fileType === 'video' && extractedFrame && result ? (
-                  <>
-                    <img ref={imageRef} src={extractedFrame} alt="Frame" 
-                         className="max-w-full max-h-96 object-contain rounded-lg bg-gray-100"
-                         onLoad={(e) => {
-                           const img = e.target;
-                           if (img.naturalWidth > 0) setImageDimensions({ width: img.naturalWidth, height: img.naturalHeight });
-                         }} />
-                    <canvas ref={boundingBoxCanvasRef} className="absolute top-0 left-0 pointer-events-none"
-                            style={{ width: '100%', height: '100%' }} />
-                  </>
-                ) : fileType === 'image' ? (
-                  <>
-                    <img ref={imageRef} src={preview} alt="Preview"
-                         className="max-w-full max-h-96 object-contain rounded-lg bg-gray-100"
-                         onLoad={(e) => {
-                           const img = e.target;
-                           if (img.naturalWidth > 0) setImageDimensions({ width: img.naturalWidth, height: img.naturalHeight });
-                         }} />
-                    {result && <canvas ref={boundingBoxCanvasRef} className="absolute top-0 left-0 pointer-events-none"
-                                       style={{ width: '100%', height: '100%' }} />}
-                  </>
-                ) : (
-                  <video ref={videoRef} src={preview} controls className="max-w-full max-h-96 object-contain rounded-lg bg-gray-100" />
-                )}
-              </div>
-              <button onClick={reset} className="absolute top-4 right-4 p-2 bg-red-500 text-white rounded-lg hover:bg-red-600 transition shadow-lg">
-                <X className="w-5 h-5" />
-              </button>
+        </div>
+      )}
+
+      <div 
+        ref={containerRef}
+        className={`bg-black rounded-xl overflow-hidden ${isFullscreen ? 'fixed inset-0 z-50 rounded-none' : 'border border-gray-200'}`}
+      >
+        {!isScanning ? (
+          <div className="bg-white text-center py-12 px-4">
+            <div className="inline-flex items-center justify-center w-20 h-20 bg-green-100 rounded-full mb-6">
+              <Camera className="w-10 h-10 text-green-600" />
             </div>
-
-            <div className="flex items-center gap-4 text-sm text-gray-600 flex-wrap">
-              {fileType === 'image' ? (
-                <div className="flex items-center gap-2"><Image className="w-4 h-4 text-green-600" /><span>Image selected</span></div>
-              ) : (
-                <div className="flex items-center gap-2"><Video className="w-4 h-4 text-green-600" />
-                  <span>Video{extractedFrame ? ' - Frame extracted' : ''}</span></div>
-              )}
-              {location && (
-                <div className="flex items-center gap-2">
-                  <MapPin className="w-4 h-4 text-green-600" />
-                  <span>{location.lat.toFixed(4)}, {location.lng.toFixed(4)}</span>
-                </div>
-              )}
-              {imageWithBoundingBoxes && (
-                <div className="flex items-center gap-2">
-                  <CheckCircle className="w-4 h-4 text-green-600" />
-                  <span className="text-green-600 font-medium">Ready to save!</span>
-                </div>
-              )}
-            </div>
-
-            {!result ? (
-              <button onClick={detectDisease} disabled={detecting}
-                      className="w-full bg-green-600 text-white py-3 rounded-lg font-medium hover:bg-green-700 transition disabled:opacity-50 flex items-center justify-center gap-2">
-                {detecting ? (
-                  <><Loader className="w-5 h-5 animate-spin" />
-                    {fileType === 'video' ? 'Extracting & Detecting...' : 'Detecting...'}</>
-                ) : (
-                  <><Camera className="w-5 h-5" />Detect Disease</>
-                )}
-              </button>
-            ) : (
-              <div className="space-y-4">
-                {!result.is_tea_leaf ? (
-                  <div className="border-2 rounded-xl p-6 bg-red-50 border-red-300">
-                    <div className="flex items-start gap-3">
-                      <AlertTriangle className="w-8 h-8 text-red-600 flex-shrink-0" />
-                      <div>
-                        <h3 className="text-xl font-bold text-red-700">Not a Tea Leaf</h3>
-                        <p className="text-red-600">Confidence: {(result.tea_confidence * 100).toFixed(1)}%</p>
-                      </div>
-                    </div>
-                  </div>
-                ) : (
-                  <>
-                    <div className="border rounded-xl p-4 bg-green-50 border-green-200">
-                      <div className="flex items-center gap-2 text-green-700">
-                        <CheckCircle className="w-5 h-5" />
-                        <span className="font-medium">Tea Leaf Confirmed ({(result.tea_confidence * 100).toFixed(1)}%)</span>
-                      </div>
-                    </div>
-
-                    {result.diseases?.length > 0 && (
-                      <div className="border-2 rounded-xl p-4 bg-orange-50 border-orange-300">
-                        <h3 className="text-lg font-bold text-orange-700 mb-2">
-                          🦠 {result.diseases.length} Disease{result.diseases.length > 1 ? 's' : ''} Detected
-                        </h3>
-                        {result.diseases.map((d, i) => (
-                          <div key={i} className="flex justify-between text-sm mb-1">
-                            <span className="text-gray-700">{d.disease}</span>
-                            <span className="font-semibold text-orange-600">{(d.confidence * 100).toFixed(0)}%</span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-
-                    {result.deficiencies?.length > 0 && (
-                      <div className="border-2 rounded-xl p-4 bg-purple-50 border-purple-300">
-                        <h3 className="text-lg font-bold text-purple-700 mb-2">
-                          💊 {result.deficiencies.length} Deficienc{result.deficiencies.length > 1 ? 'ies' : 'y'} Detected
-                        </h3>
-                        {result.deficiencies.map((d, i) => (
-                          <div key={i} className="flex justify-between text-sm mb-1">
-                            <span className="text-gray-700">{d.disease}</span>
-                            <span className="font-semibold text-purple-600">{(d.confidence * 100).toFixed(0)}%</span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-
-                    {result.is_healthy && (
-                      <div className="border-2 rounded-xl p-4 bg-green-100 border-green-300">
-                        <div className="flex items-center gap-2 text-green-700">
-                          <CheckCircle className="w-5 h-5" />
-                          <span className="font-bold">Healthy - No Issues Detected</span>
-                        </div>
-                      </div>
-                    )}
-                  </>
-                )}
-
+            <h3 className="text-xl font-semibold text-gray-900 mb-2">
+              Start Real-Time Detection
+            </h3>
+            <p className="text-base text-gray-600 mb-6 max-w-md mx-auto">
+              {isMobile ? 'Optimized for mobile. Hold steady for best results.' : 'Allow camera access when prompted.'}
+            </p>
+            
+            {cameraError && (
+              <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg text-left max-w-md mx-auto">
                 <div className="flex gap-3">
-                  <button onClick={reset}
-                          className="flex-1 bg-gray-100 text-gray-700 py-3 rounded-lg font-medium hover:bg-gray-200 transition">
-                    New Scan
-                  </button>
-                  <button onClick={downloadImageWithBoxes} disabled={!imageWithBoundingBoxes}
-                          className="flex-1 bg-blue-600 text-white py-3 rounded-lg font-medium hover:bg-blue-700 transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2">
-                    <Download className="w-5 h-5" />Download
-                  </button>
-                  <button onClick={saveToDatabase} disabled={!imageWithBoundingBoxes || saving}
-                          className="flex-1 bg-green-600 text-white py-3 rounded-lg font-medium hover:bg-green-700 transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2">
-                    {saving ? (
-                      <><Loader className="w-5 h-5 animate-spin" />Saving...</>
-                    ) : (
-                      'Save to DB'
-                    )}
-                  </button>
+                  <AlertTriangle className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" />
+                  <div className="text-sm text-red-800">{cameraError}</div>
                 </div>
               </div>
             )}
+            
+            <button
+              onClick={startCamera}
+              className="bg-green-600 text-white px-8 py-3 rounded-lg font-medium hover:bg-green-700 transition inline-flex items-center gap-2"
+            >
+              <Camera className="w-5 h-5" />
+              Start Camera
+            </button>
+          </div>
+        ) : (
+          <div className={`relative ${isFullscreen ? 'h-screen' : ''}`}>
+            <div className="relative bg-black" style={{ aspectRatio: isFullscreen ? 'auto' : '16/9' }}>
+              <video
+                ref={videoRef}
+                autoPlay
+                playsInline
+                muted
+                className={`w-full ${isFullscreen ? 'h-screen' : 'h-full'} object-contain`}
+              />
+              <canvas
+                ref={overlayCanvasRef}
+                className="absolute top-0 left-0 w-full h-full pointer-events-none"
+              />
+              
+              {/* Top Controls */}
+              <div className="absolute top-4 left-4 right-4 flex items-start justify-between">
+                <div className="bg-black bg-opacity-70 text-white px-3 py-2 rounded-lg text-sm font-mono">
+                  {fps} FPS {isDetecting && <Loader className="w-3 h-3 inline animate-spin ml-2" />}
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 bg-black bg-opacity-70 text-white px-3 py-2 rounded-lg">
+                    <div className={`w-2 h-2 rounded-full ${isPaused ? 'bg-yellow-500' : 'bg-green-500 animate-pulse'}`} />
+                    <span className="text-sm font-medium">{isPaused ? 'Paused' : 'Live'}</span>
+                  </div>
+                  
+                  <button
+                    onClick={toggleFullscreen}
+                    className="bg-black bg-opacity-70 text-white p-2 rounded-lg hover:bg-opacity-90 transition"
+                  >
+                    {isFullscreen ? <Minimize className="w-5 h-5" /> : <Maximize className="w-5 h-5" />}
+                  </button>
+                </div>
+              </div>
+
+              {/* Captured Image Overlay */}
+              {capturedImage && (
+                <div className="absolute inset-0 bg-black bg-opacity-95 flex items-center justify-center p-4">
+                  <img src={capturedImageWithBoxes || capturedImage} alt="Captured" className="max-w-full max-h-full object-contain rounded" />
+                </div>
+              )}
+
+              {/* Bottom Results Panel */}
+              {result && !capturedImage && (
+                <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black via-black to-transparent p-4">
+                  <div className="max-w-2xl mx-auto">
+                    {!result.is_tea_leaf ? (
+                      <div className="bg-red-500 bg-opacity-90 rounded-lg p-3 flex items-center gap-2">
+                        <AlertTriangle className="w-5 h-5 text-white flex-shrink-0" />
+                        <div className="text-white">
+                          <p className="font-bold text-sm">Not a Tea Leaf</p>
+                          <p className="text-xs opacity-90">Confidence: {(result.tea_confidence * 100).toFixed(1)}%</p>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="space-y-2">
+                        <div className="bg-green-500 bg-opacity-90 rounded-lg p-2 flex items-center gap-2">
+                          <CheckCircle className="w-4 h-4 text-white" />
+                          <span className="text-white text-sm font-medium">
+                            Tea Leaf ({(result.tea_confidence * 100).toFixed(1)}%)
+                          </span>
+                        </div>
+
+                        {result.diseases && result.diseases.length > 0 && (
+                          <div className="bg-orange-500 bg-opacity-90 rounded-lg p-2">
+                            <p className="text-white text-sm font-bold mb-1">
+                              🦠 {result.diseases.length} Disease{result.diseases.length > 1 ? 's' : ''} Detected
+                            </p>
+                            <div className="space-y-1">
+                              {result.diseases.slice(0, 2).map((disease, index) => (
+                                <div key={index} className="flex items-center justify-between text-xs text-white">
+                                  <span>{disease.disease}</span>
+                                  <span className="font-semibold">{(disease.confidence * 100).toFixed(0)}%</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {result.deficiencies && result.deficiencies.length > 0 && (
+                          <div className="bg-purple-500 bg-opacity-90 rounded-lg p-2">
+                            <p className="text-white text-sm font-bold mb-1">
+                              💊 {result.deficiencies.length} Deficienc{result.deficiencies.length > 1 ? 'ies' : 'y'}
+                            </p>
+                            <div className="space-y-1">
+                              {result.deficiencies.slice(0, 2).map((def, index) => (
+                                <div key={index} className="flex items-center justify-between text-xs text-white">
+                                  <span>{def.disease}</span>
+                                  <span className="font-semibold">{(def.confidence * 100).toFixed(0)}%</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Control Buttons */}
+            <div className={`${isFullscreen ? 'absolute bottom-20 left-0 right-0' : ''} p-4 bg-black`}>
+              <div className="max-w-2xl mx-auto flex gap-3">
+                {!isPaused ? (
+                  <>
+                    <button
+                      onClick={captureAndSave}
+                      disabled={!result}
+                      className="flex-1 bg-green-600 text-white py-3 rounded-lg font-medium hover:bg-green-700 transition inline-flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      <Scan className="w-5 h-5" />
+                      Capture & Save
+                    </button>
+                    <button
+                      onClick={stopCamera}
+                      className="px-6 bg-red-500 text-white py-3 rounded-lg font-medium hover:bg-red-600 transition inline-flex items-center justify-center gap-2"
+                    >
+                      <X className="w-5 h-5" />
+                      Stop
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button
+                      onClick={resumeScanning}
+                      className="flex-1 bg-green-600 text-white py-3 rounded-lg font-medium hover:bg-green-700 transition inline-flex items-center justify-center gap-2"
+                    >
+                      <RefreshCw className="w-5 h-5" />
+                      Resume
+                    </button>
+                    <button
+                      onClick={downloadCapture}
+                      className="px-6 bg-blue-500 text-white py-3 rounded-lg font-medium hover:bg-blue-600 transition inline-flex items-center justify-center gap-2"
+                    >
+                      <Download className="w-5 h-5" />
+                      Download
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
           </div>
         )}
       </div>
+
+      <canvas ref={canvasRef} className="hidden" />
     </div>
   );
 };
 
-export default ImprovedUploadComponent;
+export default EnhancedRealtimeScan;
