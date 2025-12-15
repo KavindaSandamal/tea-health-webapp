@@ -1,7 +1,12 @@
 import React, { useState, useRef, useEffect } from 'react';
+import { useAuth } from '../../context/AuthContext';
+import { saveScan, createGeoPoint } from '../../firebase/firestore';
+import { compressImage } from '../../utils/imageUtils';
+import { toast } from 'react-toastify';
 import { Upload, Camera, X, MapPin, Loader, AlertTriangle, CheckCircle, Video, Image, Download } from 'lucide-react';
 
 const ImprovedUploadComponent = () => {
+  const { currentUser } = useAuth();
   const [selectedFile, setSelectedFile] = useState(null);
   const [fileType, setFileType] = useState(null);
   const [preview, setPreview] = useState(null);
@@ -12,6 +17,7 @@ const ImprovedUploadComponent = () => {
   const [imageDimensions, setImageDimensions] = useState({ width: 0, height: 0 });
   const [uploadMode, setUploadMode] = useState('image');
   const [imageWithBoundingBoxes, setImageWithBoundingBoxes] = useState(null);
+  const [saving, setSaving] = useState(false);
   
   const fileInputRef = useRef(null);
   const imageRef = useRef(null);
@@ -44,7 +50,7 @@ const ImprovedUploadComponent = () => {
     const isVideo = file.type.startsWith('video/');
 
     if (!isImage && !isVideo) {
-      alert('Please select an image or video file');
+      toast.error('Please select an image or video file');
       return;
     }
 
@@ -112,8 +118,10 @@ const ImprovedUploadComponent = () => {
     mergedCanvas.height = img.naturalHeight;
     const ctx = mergedCanvas.getContext('2d');
     
+    // Draw original image
     ctx.drawImage(img, 0, 0);
     
+    // Scale and draw bounding boxes overlay
     const scaleX = img.naturalWidth / img.offsetWidth;
     const scaleY = img.naturalHeight / img.offsetHeight;
     ctx.save();
@@ -121,7 +129,9 @@ const ImprovedUploadComponent = () => {
     ctx.drawImage(overlayCanvas, 0, 0);
     ctx.restore();
     
-    setImageWithBoundingBoxes(mergedCanvas.toDataURL('image/jpeg', 0.95));
+    // Convert to base64
+    const imageWithBoxes = mergedCanvas.toDataURL('image/jpeg', 0.95);
+    setImageWithBoundingBoxes(imageWithBoxes);
     console.log('✓ Image with bounding boxes generated');
   };
 
@@ -158,6 +168,46 @@ const ImprovedUploadComponent = () => {
     });
   };
 
+  const getLocationName = async (lat, lng) => {
+    try {
+      const response = await fetch(
+        `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json`
+      );
+      const data = await response.json();
+      return data.display_name || 'Unknown Location';
+    } catch (error) {
+      console.error('Error getting location name:', error);
+      return 'Unknown Location';
+    }
+  };
+
+  const generateLabel = (data) => {
+    if (!data.is_tea_leaf) return 'Not a Tea Leaf';
+    if (data.is_healthy) return 'Healthy';
+
+    const allDetections = [
+      ...(Array.isArray(data.diseases) ? data.diseases : []),
+      ...(Array.isArray(data.deficiencies) ? data.deficiencies : [])
+    ];
+
+    if (allDetections.length === 0) return 'Unknown';
+    allDetections.sort((a, b) => b.confidence - a.confidence);
+    return allDetections[0].disease.charAt(0).toUpperCase() + allDetections[0].disease.slice(1);
+  };
+
+  const calculateOverallConfidence = (data) => {
+    if (!data.is_tea_leaf) return data.tea_confidence;
+    if (data.is_healthy) return data.tea_confidence;
+
+    const allDetections = [
+      ...(Array.isArray(data.diseases) ? data.diseases : []),
+      ...(Array.isArray(data.deficiencies) ? data.deficiencies : [])
+    ];
+
+    if (allDetections.length === 0) return 0;
+    return Math.max(...allDetections.map(d => d.confidence));
+  };
+
   const detectDisease = async () => {
     if (!selectedFile) return;
 
@@ -168,7 +218,8 @@ const ImprovedUploadComponent = () => {
       let fileToSend = selectedFile;
 
       if (fileType === 'video') {
-        console.log('🎬 Extracting frame...');
+        console.log('🎬 Extracting frame from video...');
+        toast.info('Extracting frame from video...');
         const { blob, dataUrl } = await extractFrameFromVideo(selectedFile);
         setExtractedFrame(dataUrl);
         fileToSend = new File([blob], 'frame.jpg', { type: 'image/jpeg' });
@@ -178,6 +229,7 @@ const ImprovedUploadComponent = () => {
       formData.append('image', fileToSend);
 
       console.log('📡 Sending to API...');
+      toast.info('Analyzing image...');
       const response = await fetch('https://d5365df2e6a6.ngrok-free.app/predict', {
         method: 'POST',
         body: formData,
@@ -196,10 +248,11 @@ const ImprovedUploadComponent = () => {
       }
 
       setResult(data);
+      toast.success('Detection complete!');
       
     } catch (error) {
       console.error('❌ Detection error:', error);
-      alert('Detection failed: ' + error.message);
+      toast.error('Detection failed: ' + error.message);
     } finally {
       setDetecting(false);
     }
@@ -211,40 +264,52 @@ const ImprovedUploadComponent = () => {
     link.href = imageWithBoundingBoxes;
     link.download = `tea-scan-${Date.now()}.jpg`;
     link.click();
+    toast.success('Image downloaded!');
   };
 
   const saveToDatabase = async () => {
     if (!imageWithBoundingBoxes || !result) {
-      alert('Please wait for processing to complete');
+      toast.error('Please wait for processing to complete');
       return;
     }
 
-    const allDetections = [
-      ...(result.diseases || []),
-      ...(result.deficiencies || [])
-    ];
-    const topDetection = allDetections.sort((a, b) => b.confidence - a.confidence)[0];
+    setSaving(true);
+    toast.info('Saving scan...');
 
-    const scanData = {
-      imageB64: imageWithBoundingBoxes, // Image WITH bounding boxes
-      label: !result.is_tea_leaf ? 'Not a Tea Leaf' : result.is_healthy ? 'Healthy' : 
-             topDetection ? topDetection.disease : 'Unknown',
-      confidence: !result.is_tea_leaf ? result.tea_confidence :
-                 allDetections.length ? Math.max(...allDetections.map(d => d.confidence)) : result.tea_confidence,
-      is_tea_leaf: result.is_tea_leaf,
-      tea_confidence: result.tea_confidence,
-      is_healthy: result.is_healthy,
-      total_detections: result.total_detections,
-      diseases: result.diseases || [],
-      deficiencies: result.deficiencies || [],
-      inference_time: result.inference_time,
-      source: fileType,
-      timestamp: new Date().toISOString()
-    };
+    try {
+      const label = generateLabel(result);
+      const confidence = calculateOverallConfidence(result);
 
-    console.log('💾 Ready to save:', scanData);
-    alert('Scan ready to save! Check console.');
-    // Uncomment to save: await saveScan(currentUser.uid, scanData);
+      const scanData = {
+        imageB64: imageWithBoundingBoxes, // Image WITH bounding boxes
+        label: label,
+        confidence: confidence,
+        is_tea_leaf: result.is_tea_leaf,
+        tea_confidence: result.tea_confidence,
+        is_healthy: result.is_healthy,
+        total_detections: result.total_detections,
+        diseases: result.diseases || [],
+        deficiencies: result.deficiencies || [],
+        inference_time: result.inference_time,
+        inference_engine: result.inference_engine || 'ONNX',
+        source: fileType,
+        device: /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) ? 'mobile' : 'desktop',
+        locName: location ? await getLocationName(location.lat, location.lng) : 'Unknown',
+        geo: location ? createGeoPoint(location.lat, location.lng) : null,
+      };
+
+      console.log('💾 Saving to database:', scanData);
+      await saveScan(currentUser.uid, scanData);
+      
+      toast.success('Scan saved successfully!');
+      console.log('✓ Scan saved to Firestore');
+      
+    } catch (error) {
+      console.error('❌ Save error:', error);
+      toast.error('Failed to save scan: ' + error.message);
+    } finally {
+      setSaving(false);
+    }
   };
 
   const reset = () => {
@@ -259,7 +324,7 @@ const ImprovedUploadComponent = () => {
   };
 
   return (
-    <div className="max-w-4xl mx-auto space-y-6 p-4">
+    <div className="max-w-4xl mx-auto space-y-6 px-4">
       <div>
         <h1 className="text-3xl font-bold text-gray-900">New Scan</h1>
         <p className="text-gray-600">Upload image/video to detect tea plant diseases</p>
@@ -407,6 +472,20 @@ const ImprovedUploadComponent = () => {
                       </div>
                     )}
 
+                    {result.deficiencies?.length > 0 && (
+                      <div className="border-2 rounded-xl p-4 bg-purple-50 border-purple-300">
+                        <h3 className="text-lg font-bold text-purple-700 mb-2">
+                          💊 {result.deficiencies.length} Deficienc{result.deficiencies.length > 1 ? 'ies' : 'y'} Detected
+                        </h3>
+                        {result.deficiencies.map((d, i) => (
+                          <div key={i} className="flex justify-between text-sm mb-1">
+                            <span className="text-gray-700">{d.disease}</span>
+                            <span className="font-semibold text-purple-600">{(d.confidence * 100).toFixed(0)}%</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
                     {result.is_healthy && (
                       <div className="border-2 rounded-xl p-4 bg-green-100 border-green-300">
                         <div className="flex items-center gap-2 text-green-700">
@@ -427,9 +506,13 @@ const ImprovedUploadComponent = () => {
                           className="flex-1 bg-blue-600 text-white py-3 rounded-lg font-medium hover:bg-blue-700 transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2">
                     <Download className="w-5 h-5" />Download
                   </button>
-                  <button onClick={saveToDatabase} disabled={!imageWithBoundingBoxes}
-                          className="flex-1 bg-green-600 text-white py-3 rounded-lg font-medium hover:bg-green-700 transition disabled:opacity-50 disabled:cursor-not-allowed">
-                    Save to DB
+                  <button onClick={saveToDatabase} disabled={!imageWithBoundingBoxes || saving}
+                          className="flex-1 bg-green-600 text-white py-3 rounded-lg font-medium hover:bg-green-700 transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2">
+                    {saving ? (
+                      <><Loader className="w-5 h-5 animate-spin" />Saving...</>
+                    ) : (
+                      'Save to DB'
+                    )}
                   </button>
                 </div>
               </div>
