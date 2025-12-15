@@ -277,7 +277,7 @@ const UploadComponent = () => {
       const formData = new FormData();
       formData.append('image', fileToSend);
 
-      const response = await fetch('https://ed547b766da6.ngrok-free.app/predict', {
+      const response = await fetch('https://99306e154257.ngrok-free.app/predict', {
         method: 'POST',
         body: formData,
       });
