@@ -83,15 +83,23 @@ const RealtimeScanComponent = () => {
         videoRef.current.srcObject = stream;
         streamRef.current = stream;
         
-        videoRef.current.onloadedmetadata = () => {
-          console.log('Video metadata loaded');
+        // Force video attributes
+        videoRef.current.setAttribute('playsinline', '');
+        videoRef.current.setAttribute('autoplay', '');
+        videoRef.current.muted = true;
+        
+        // Add multiple event listeners for better compatibility
+        const handleCanPlay = () => {
+          console.log('Video can play');
+          console.log('Video dimensions:', videoRef.current.videoWidth, 'x', videoRef.current.videoHeight);
+          
           videoRef.current.play()
             .then(() => {
-              console.log('Video playing');
+              console.log('Video playing successfully');
               setIsScanning(true);
               isScanningRef.current = true;
               
-              // Start detection loop after a small delay to ensure state is updated
+              // Start detection loop after a small delay
               setTimeout(() => {
                 startDetectionLoop();
               }, 100);
@@ -100,9 +108,26 @@ const RealtimeScanComponent = () => {
             })
             .catch(err => {
               console.error('Error playing video:', err);
-              toast.error('Failed to start video playback');
+              toast.error('Failed to start video playback: ' + err.message);
             });
         };
+        
+        videoRef.current.onloadedmetadata = () => {
+          console.log('Video metadata loaded');
+          console.log('ReadyState:', videoRef.current.readyState);
+        };
+        
+        videoRef.current.oncanplay = handleCanPlay;
+        
+        // Fallback: try to play immediately
+        setTimeout(() => {
+          if (videoRef.current && videoRef.current.paused) {
+            console.log('Attempting immediate play...');
+            videoRef.current.play().catch(err => {
+              console.error('Immediate play failed:', err);
+            });
+          }
+        }, 500);
       }
     } catch (error) {
       console.error('Camera access error:', error);
@@ -455,13 +480,14 @@ const RealtimeScanComponent = () => {
           </div>
         ) : (
           <div className="space-y-4">
-            <div className="relative bg-black rounded-lg overflow-hidden" style={{ aspectRatio: '16/9' }}>
+            <div className="relative bg-black rounded-lg overflow-hidden" style={{ aspectRatio: '16/9', minHeight: '400px' }}>
               <video
                 ref={videoRef}
                 autoPlay
                 playsInline
                 muted
                 className="w-full h-full object-contain"
+                style={{ display: 'block', minHeight: '400px' }}
               />
               <canvas
                 ref={overlayCanvasRef}
