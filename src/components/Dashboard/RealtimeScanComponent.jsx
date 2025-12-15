@@ -1,8 +1,4 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { useAuth } from '../../context/AuthContext';
-import { saveScan, createGeoPoint } from '../../firebase/firestore';
-import { compressImage } from '../../utils/imageUtils';
-import { toast } from 'react-toastify';
 import { 
   Camera, 
   X, 
@@ -12,20 +8,28 @@ import {
   RefreshCw,
   Download,
   Scan,
-  Smartphone
+  Smartphone,
+  Maximize,
+  Minimize,
+  Info,
+  Wifi,
+  WifiOff
 } from 'lucide-react';
 
-const RealtimeScanComponent = () => {
-  const { currentUser } = useAuth();
+const EnhancedRealtimeScan = () => {
   const [isScanning, setIsScanning] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   const [isDetecting, setIsDetecting] = useState(false);
   const [result, setResult] = useState(null);
   const [location, setLocation] = useState(null);
   const [capturedImage, setCapturedImage] = useState(null);
+  const [capturedImageWithBoxes, setCapturedImageWithBoxes] = useState(null);
   const [fps, setFps] = useState(0);
   const [cameraError, setCameraError] = useState(null);
   const [isMobile, setIsMobile] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [showInstructions, setShowInstructions] = useState(true);
+  const [apiStatus, setApiStatus] = useState('checking');
   
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
@@ -36,9 +40,9 @@ const RealtimeScanComponent = () => {
   const lastDetectionTime = useRef(0);
   const fpsCounter = useRef({ frames: 0, lastTime: Date.now() });
   const detectionHistoryRef = useRef([]);
+  const containerRef = useRef(null);
 
   useEffect(() => {
-    // Detect if mobile device
     const checkMobile = () => {
       const mobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
       setIsMobile(mobile);
@@ -46,6 +50,9 @@ const RealtimeScanComponent = () => {
     };
     
     checkMobile();
+
+    // Check API status
+    checkApiHealth();
 
     if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
@@ -72,11 +79,21 @@ const RealtimeScanComponent = () => {
     };
   }, []);
 
+  const checkApiHealth = async () => {
+    try {
+      const response = await fetch('https://d5365df2e6a6.ngrok-free.app/health', {
+        method: 'GET',
+      });
+      setApiStatus(response.ok ? 'online' : 'offline');
+    } catch (error) {
+      setApiStatus('offline');
+    }
+  };
+
   const startCamera = async () => {
     setCameraError(null);
     
     try {
-      // Mobile-optimized constraints
       const constraints = {
         video: {
           facingMode: { ideal: 'environment' },
@@ -87,10 +104,7 @@ const RealtimeScanComponent = () => {
         audio: false
       };
 
-      console.log('Requesting camera access (Mobile:', isMobile, ')...');
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
-      
-      console.log('Camera access granted!', stream.getVideoTracks());
       
       streamRef.current = stream;
       setIsScanning(true);
@@ -99,34 +113,20 @@ const RealtimeScanComponent = () => {
       await new Promise(resolve => setTimeout(resolve, 100));
       
       if (!videoRef.current) {
-        console.error('Video ref is still null after waiting!');
-        toast.error('Failed to create video element');
-        return;
+        throw new Error('Video element not ready');
       }
 
       const video = videoRef.current;
       video.srcObject = stream;
-      
-      // Force attributes for better mobile compatibility
       video.setAttribute('playsinline', 'true');
       video.setAttribute('webkit-playsinline', 'true');
       
-      console.log('Stream assigned to video element');
+      await video.play();
       
-      try {
-        await video.play();
-        console.log('Video is now playing!');
-        console.log('Video dimensions:', video.videoWidth, 'x', video.videoHeight);
-        
-        setTimeout(() => {
-          startDetectionLoop();
-        }, 100);
-        
-        toast.success('Camera started successfully!');
-      } catch (playError) {
-        console.error('Failed to play video:', playError);
-        toast.error('Failed to start video: ' + playError.message);
-      }
+      setTimeout(() => {
+        startDetectionLoop();
+      }, 100);
+      
     } catch (error) {
       console.error('Camera access error:', error);
       let errorMessage = 'Failed to access camera. ';
@@ -142,22 +142,16 @@ const RealtimeScanComponent = () => {
       }
       
       setCameraError(errorMessage);
-      toast.error(errorMessage);
       setIsScanning(false);
       isScanningRef.current = false;
     }
   };
 
   const stopCamera = () => {
-    console.log('Stopping camera...');
-    
     isScanningRef.current = false;
     
     if (streamRef.current) {
-      streamRef.current.getTracks().forEach(track => {
-        track.stop();
-        console.log('Track stopped:', track);
-      });
+      streamRef.current.getTracks().forEach(track => track.stop());
       streamRef.current = null;
     }
     
@@ -173,7 +167,28 @@ const RealtimeScanComponent = () => {
     setIsScanning(false);
     setIsPaused(false);
     setResult(null);
+    setIsFullscreen(false);
     detectionHistoryRef.current = [];
+    
+    if (document.fullscreenElement) {
+      document.exitFullscreen();
+    }
+  };
+
+  const toggleFullscreen = async () => {
+    if (!containerRef.current) return;
+
+    try {
+      if (!document.fullscreenElement) {
+        await containerRef.current.requestFullscreen();
+        setIsFullscreen(true);
+      } else {
+        await document.exitFullscreen();
+        setIsFullscreen(false);
+      }
+    } catch (error) {
+      console.error('Fullscreen error:', error);
+    }
   };
 
   const startDetectionLoop = () => {
@@ -186,8 +201,6 @@ const RealtimeScanComponent = () => {
       }
 
       const now = Date.now();
-      
-      // Mobile: slower detection rate to save battery and bandwidth
       const detectionInterval = isMobile ? 2000 : 1500;
       
       if (now - lastDetectionTime.current > detectionInterval) {
@@ -195,7 +208,6 @@ const RealtimeScanComponent = () => {
         lastDetectionTime.current = now;
       }
 
-      // Update FPS counter
       fpsCounter.current.frames++;
       if (now - fpsCounter.current.lastTime > 1000) {
         setFps(fpsCounter.current.frames);
@@ -241,47 +253,40 @@ const RealtimeScanComponent = () => {
         });
 
         if (!response.ok) {
-          console.warn('API returned non-OK status:', response.status);
+          setApiStatus('offline');
           setIsDetecting(false);
           return;
         }
 
+        setApiStatus('online');
         const data = await response.json();
         
         if (data.success) {
-          console.log('Detection result:', data);
-          
-          // Use detection history to stabilize results (keep last 3 detections)
           detectionHistoryRef.current.push(data);
           if (detectionHistoryRef.current.length > 3) {
             detectionHistoryRef.current.shift();
           }
           
-          // Use the most recent detection but keep it stable
           const stableResult = getMostConsistentResult(detectionHistoryRef.current);
           setResult(stableResult);
           drawBoundingBoxes(stableResult);
         }
       } catch (error) {
         console.error('Detection error:', error);
+        setApiStatus('offline');
       } finally {
         setIsDetecting(false);
       }
-    }, 'image/jpeg', isMobile ? 0.7 : 0.8); // Lower quality on mobile to reduce data
+    }, 'image/jpeg', isMobile ? 0.7 : 0.8);
   };
 
-  // Get most consistent detection from recent history
   const getMostConsistentResult = (history) => {
     if (history.length === 0) return null;
-    
-    // Return the most recent if we don't have enough history
     if (history.length < 2) return history[history.length - 1];
     
-    // Use the latest detection but with accumulated diseases from recent history
     const latest = history[history.length - 1];
-    
-    // Collect all unique diseases from recent detections with high confidence
     const allDiseases = new Map();
+    
     history.forEach(detection => {
       if (detection.diseases) {
         detection.diseases.forEach(disease => {
@@ -293,7 +298,6 @@ const RealtimeScanComponent = () => {
       }
     });
     
-    // Return latest with enhanced disease list
     return {
       ...latest,
       diseases: Array.from(allDiseases.values()).sort((a, b) => b.confidence - a.confidence)
@@ -323,8 +327,6 @@ const RealtimeScanComponent = () => {
     const deficiencies = Array.isArray(data.deficiencies) ? data.deficiencies : [];
     const allDetections = [...diseases, ...deficiencies];
 
-    console.log(`Drawing ${allDetections.length} detections`);
-
     allDetections.forEach((detection) => {
       if (!detection || !detection.bbox) return;
 
@@ -347,7 +349,6 @@ const RealtimeScanComponent = () => {
 
       const color = getBoxColor(detection.disease);
 
-      // Thicker lines for mobile
       ctx.strokeStyle = color;
       ctx.lineWidth = isMobile ? 4 : 3;
       ctx.strokeRect(scaledX1, scaledY1, width, height);
@@ -385,6 +386,33 @@ const RealtimeScanComponent = () => {
     return colorMap[disease?.toLowerCase()] || '#6b7280';
   };
 
+  const captureImageWithBoundingBoxes = () => {
+    if (!videoRef.current || !overlayCanvasRef.current) return null;
+
+    const video = videoRef.current;
+    const overlay = overlayCanvasRef.current;
+    
+    // Create a new canvas to merge video + bounding boxes
+    const mergedCanvas = document.createElement('canvas');
+    mergedCanvas.width = video.videoWidth;
+    mergedCanvas.height = video.videoHeight;
+    const ctx = mergedCanvas.getContext('2d');
+    
+    // Draw video frame
+    ctx.drawImage(video, 0, 0, mergedCanvas.width, mergedCanvas.height);
+    
+    // Scale and draw overlay
+    const scaleX = video.videoWidth / video.offsetWidth;
+    const scaleY = video.videoHeight / video.offsetHeight;
+    
+    ctx.save();
+    ctx.scale(scaleX, scaleY);
+    ctx.drawImage(overlay, 0, 0);
+    ctx.restore();
+    
+    return mergedCanvas.toDataURL('image/jpeg', 0.95);
+  };
+
   const captureAndSave = async () => {
     if (!videoRef.current || !canvasRef.current) return;
 
@@ -397,283 +425,262 @@ const RealtimeScanComponent = () => {
     ctx.drawImage(video, 0, 0);
 
     const dataUrl = canvas.toDataURL('image/jpeg', 0.95);
+    const dataUrlWithBoxes = captureImageWithBoundingBoxes();
+    
     setCapturedImage(dataUrl);
+    setCapturedImageWithBoxes(dataUrlWithBoxes);
     setIsPaused(true);
 
-    toast.info('Saving scan...');
-
-    try {
-      canvas.toBlob(async (blob) => {
-        const file = new File([blob], 'capture.jpg', { type: 'image/jpeg' });
-        const base64Image = await compressImage(file);
-
-        const scanData = {
-          imageB64: base64Image,
-          label: generateLabel(result),
-          confidence: calculateConfidence(result),
-          is_tea_leaf: result?.is_tea_leaf || false,
-          tea_confidence: result?.tea_confidence || 0,
-          is_healthy: result?.is_healthy || false,
-          total_detections: result?.total_detections || 0,
-          diseases: result?.diseases || [],
-          deficiencies: result?.deficiencies || [],
-          inference_time: result?.inference_time || 0,
-          inference_engine: result?.inference_engine || 'ONNX',
-          source: 'realtime',
-          device: isMobile ? 'mobile' : 'desktop',
-          locName: location ? await getLocationName(location.lat, location.lng) : 'Unknown',
-          geo: location ? createGeoPoint(location.lat, location.lng) : null,
-        };
-
-        await saveScan(currentUser.uid, scanData);
-        toast.success('Scan saved successfully!');
-      }, 'image/jpeg', 0.95);
-    } catch (error) {
-      console.error('Save error:', error);
-      toast.error('Failed to save scan');
-    }
-  };
-
-  const generateLabel = (data) => {
-    if (!data || !data.is_tea_leaf) return 'Not a Tea Leaf';
-    if (data.is_healthy) return 'Healthy';
-
-    const allDetections = [
-      ...(Array.isArray(data.diseases) ? data.diseases : []),
-      ...(Array.isArray(data.deficiencies) ? data.deficiencies : [])
-    ];
-
-    if (allDetections.length === 0) return 'Unknown';
-    allDetections.sort((a, b) => b.confidence - a.confidence);
-    return allDetections[0].disease.charAt(0).toUpperCase() + allDetections[0].disease.slice(1);
-  };
-
-  const calculateConfidence = (data) => {
-    if (!data || !data.is_tea_leaf) return data?.tea_confidence || 0;
-    if (data.is_healthy) return data.tea_confidence;
-
-    const allDetections = [
-      ...(Array.isArray(data.diseases) ? data.diseases : []),
-      ...(Array.isArray(data.deficiencies) ? data.deficiencies : [])
-    ];
-
-    if (allDetections.length === 0) return 0;
-    return Math.max(...allDetections.map(d => d.confidence));
-  };
-
-  const getLocationName = async (lat, lng) => {
-    try {
-      const response = await fetch(
-        `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json`
-      );
-      const data = await response.json();
-      return data.display_name || 'Unknown Location';
-    } catch (error) {
-      return 'Unknown Location';
-    }
+    // Here you would save to your backend
+    console.log('Captured images ready to save:', {
+      original: dataUrl,
+      withBoundingBoxes: dataUrlWithBoxes,
+      result: result
+    });
   };
 
   const resumeScanning = () => {
     setCapturedImage(null);
+    setCapturedImageWithBoxes(null);
     setIsPaused(false);
   };
 
   const downloadCapture = () => {
-    if (!capturedImage) return;
+    if (!capturedImageWithBoxes) return;
     
     const link = document.createElement('a');
-    link.href = capturedImage;
+    link.href = capturedImageWithBoxes;
     link.download = `tea-scan-${Date.now()}.jpg`;
     link.click();
-    toast.success('Image downloaded!');
   };
 
   return (
-    <div className="max-w-4xl mx-auto space-y-4 sm:space-y-6 px-4 sm:px-0">
-      <div>
-        <div className="flex items-center gap-2 mb-1">
-          <h1 className="text-2xl sm:text-3xl font-bold text-gray-900">Real-Time Scan</h1>
-          {isMobile && <Smartphone className="w-5 h-5 text-green-600" />}
+    <div className="max-w-7xl mx-auto space-y-4 px-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <div className="flex items-center gap-2 mb-1">
+            <h1 className="text-2xl sm:text-3xl font-bold text-gray-900">Real-Time Scanner</h1>
+            {isMobile && <Smartphone className="w-5 h-5 text-green-600" />}
+          </div>
+          <p className="text-sm text-gray-600">Point your camera at tea leaves for instant detection</p>
         </div>
-        <p className="text-sm sm:text-base text-gray-600">Point your camera at tea leaves for instant disease detection</p>
+        
+        <div className="flex items-center gap-2">
+          {apiStatus === 'online' ? (
+            <div className="flex items-center gap-1 text-green-600 text-sm">
+              <Wifi className="w-4 h-4" />
+              <span className="hidden sm:inline">API Online</span>
+            </div>
+          ) : (
+            <div className="flex items-center gap-1 text-red-600 text-sm">
+              <WifiOff className="w-4 h-4" />
+              <span className="hidden sm:inline">API Offline</span>
+            </div>
+          )}
+        </div>
       </div>
 
-      <div className="bg-white rounded-xl border border-gray-200 p-4 sm:p-6">
-        {!isScanning ? (
-          <div className="text-center py-8 sm:py-12">
-            <div className="inline-flex items-center justify-center w-16 h-16 sm:w-20 sm:h-20 bg-green-100 rounded-full mb-4 sm:mb-6">
-              <Camera className="w-8 h-8 sm:w-10 sm:h-10 text-green-600" />
+      {showInstructions && !isScanning && (
+        <div className="bg-blue-50 border border-blue-200 rounded-xl p-4">
+          <div className="flex items-start gap-3">
+            <Info className="w-5 h-5 text-blue-600 flex-shrink-0 mt-0.5" />
+            <div className="flex-1">
+              <h3 className="font-semibold text-blue-900 mb-2">How to use Real-Time Scanner:</h3>
+              <ul className="text-sm text-blue-800 space-y-1 list-disc list-inside">
+                <li>Click "Start Camera" and allow camera permissions</li>
+                <li>Hold your device steady and point at tea leaves</li>
+                <li>Wait for the system to detect diseases (green pulse = scanning)</li>
+                <li>Use fullscreen mode for better viewing experience</li>
+                <li>Click "Capture & Save" when you see detections</li>
+                <li>Saved images will include bounding boxes</li>
+              </ul>
+              <button
+                onClick={() => setShowInstructions(false)}
+                className="text-xs text-blue-600 hover:text-blue-700 mt-2"
+              >
+                Hide instructions
+              </button>
             </div>
-            <h3 className="text-lg sm:text-xl font-semibold text-gray-900 mb-2">
+          </div>
+        </div>
+      )}
+
+      <div 
+        ref={containerRef}
+        className={`bg-black rounded-xl overflow-hidden ${isFullscreen ? 'fixed inset-0 z-50 rounded-none' : 'border border-gray-200'}`}
+      >
+        {!isScanning ? (
+          <div className="bg-white text-center py-12 px-4">
+            <div className="inline-flex items-center justify-center w-20 h-20 bg-green-100 rounded-full mb-6">
+              <Camera className="w-10 h-10 text-green-600" />
+            </div>
+            <h3 className="text-xl font-semibold text-gray-900 mb-2">
               Start Real-Time Detection
             </h3>
-            <p className="text-sm sm:text-base text-gray-600 mb-4 sm:mb-6 max-w-md mx-auto">
-              Use your camera to scan tea leaves in real-time. {isMobile ? 'Optimized for mobile devices.' : 'Allow camera access when prompted.'}
+            <p className="text-base text-gray-600 mb-6 max-w-md mx-auto">
+              {isMobile ? 'Optimized for mobile. Hold steady for best results.' : 'Allow camera access when prompted.'}
             </p>
             
             {cameraError && (
-              <div className="mb-4 sm:mb-6 p-3 sm:p-4 bg-red-50 border border-red-200 rounded-lg text-left max-w-md mx-auto">
-                <div className="flex gap-2 sm:gap-3">
-                  <AlertTriangle className="w-4 h-4 sm:w-5 sm:h-5 text-red-600 flex-shrink-0 mt-0.5" />
-                  <div className="text-xs sm:text-sm text-red-800">{cameraError}</div>
+              <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg text-left max-w-md mx-auto">
+                <div className="flex gap-3">
+                  <AlertTriangle className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" />
+                  <div className="text-sm text-red-800">{cameraError}</div>
                 </div>
               </div>
             )}
             
             <button
               onClick={startCamera}
-              className="bg-green-600 text-white px-6 sm:px-8 py-2.5 sm:py-3 rounded-lg font-medium hover:bg-green-700 transition inline-flex items-center gap-2 text-sm sm:text-base"
+              className="bg-green-600 text-white px-8 py-3 rounded-lg font-medium hover:bg-green-700 transition inline-flex items-center gap-2"
             >
-              <Camera className="w-4 h-4 sm:w-5 sm:h-5" />
+              <Camera className="w-5 h-5" />
               Start Camera
             </button>
-            
-            <div className="mt-4 sm:mt-6 text-xs sm:text-sm text-gray-500">
-              <p>💡 Tip: {isMobile ? 'Hold your phone steady for best results' : 'Allow camera permissions when prompted'}</p>
-            </div>
           </div>
         ) : (
-          <div className="space-y-3 sm:space-y-4">
-            <div className="relative bg-black rounded-lg overflow-hidden" style={{ aspectRatio: '16/9' }}>
+          <div className={`relative ${isFullscreen ? 'h-screen' : ''}`}>
+            <div className="relative bg-black" style={{ aspectRatio: isFullscreen ? 'auto' : '16/9' }}>
               <video
                 ref={videoRef}
                 autoPlay
                 playsInline
                 muted
-                className="w-full h-full object-contain"
+                className={`w-full ${isFullscreen ? 'h-screen' : 'h-full'} object-contain`}
               />
               <canvas
                 ref={overlayCanvasRef}
                 className="absolute top-0 left-0 w-full h-full pointer-events-none"
               />
               
-              <div className="absolute top-2 sm:top-4 left-2 sm:left-4 bg-black bg-opacity-70 text-white px-2 sm:px-3 py-1 sm:py-2 rounded-lg text-xs sm:text-sm font-mono">
-                {fps} FPS {isDetecting && <Loader className="w-2.5 h-2.5 sm:w-3 sm:h-3 inline animate-spin ml-1 sm:ml-2" />}
+              {/* Top Controls */}
+              <div className="absolute top-4 left-4 right-4 flex items-start justify-between">
+                <div className="bg-black bg-opacity-70 text-white px-3 py-2 rounded-lg text-sm font-mono">
+                  {fps} FPS {isDetecting && <Loader className="w-3 h-3 inline animate-spin ml-2" />}
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 bg-black bg-opacity-70 text-white px-3 py-2 rounded-lg">
+                    <div className={`w-2 h-2 rounded-full ${isPaused ? 'bg-yellow-500' : 'bg-green-500 animate-pulse'}`} />
+                    <span className="text-sm font-medium">{isPaused ? 'Paused' : 'Live'}</span>
+                  </div>
+                  
+                  <button
+                    onClick={toggleFullscreen}
+                    className="bg-black bg-opacity-70 text-white p-2 rounded-lg hover:bg-opacity-90 transition"
+                  >
+                    {isFullscreen ? <Minimize className="w-5 h-5" /> : <Maximize className="w-5 h-5" />}
+                  </button>
+                </div>
               </div>
 
-              <div className="absolute top-2 sm:top-4 right-2 sm:right-4 flex items-center gap-1.5 sm:gap-2 bg-black bg-opacity-70 text-white px-2 sm:px-3 py-1 sm:py-2 rounded-lg">
-                <div className={`w-1.5 h-1.5 sm:w-2 sm:h-2 rounded-full ${isPaused ? 'bg-yellow-500' : 'bg-green-500 animate-pulse'}`} />
-                <span className="text-xs sm:text-sm font-medium">{isPaused ? 'Paused' : 'Live'}</span>
-              </div>
-
+              {/* Captured Image Overlay */}
               {capturedImage && (
-                <div className="absolute inset-0 bg-black bg-opacity-95 flex items-center justify-center p-2 sm:p-4">
-                  <img src={capturedImage} alt="Captured" className="max-w-full max-h-full object-contain rounded" />
+                <div className="absolute inset-0 bg-black bg-opacity-95 flex items-center justify-center p-4">
+                  <img src={capturedImageWithBoxes || capturedImage} alt="Captured" className="max-w-full max-h-full object-contain rounded" />
+                </div>
+              )}
+
+              {/* Bottom Results Panel */}
+              {result && !capturedImage && (
+                <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black via-black to-transparent p-4">
+                  <div className="max-w-2xl mx-auto">
+                    {!result.is_tea_leaf ? (
+                      <div className="bg-red-500 bg-opacity-90 rounded-lg p-3 flex items-center gap-2">
+                        <AlertTriangle className="w-5 h-5 text-white flex-shrink-0" />
+                        <div className="text-white">
+                          <p className="font-bold text-sm">Not a Tea Leaf</p>
+                          <p className="text-xs opacity-90">Confidence: {(result.tea_confidence * 100).toFixed(1)}%</p>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="space-y-2">
+                        <div className="bg-green-500 bg-opacity-90 rounded-lg p-2 flex items-center gap-2">
+                          <CheckCircle className="w-4 h-4 text-white" />
+                          <span className="text-white text-sm font-medium">
+                            Tea Leaf ({(result.tea_confidence * 100).toFixed(1)}%)
+                          </span>
+                        </div>
+
+                        {result.diseases && result.diseases.length > 0 && (
+                          <div className="bg-orange-500 bg-opacity-90 rounded-lg p-2">
+                            <p className="text-white text-sm font-bold mb-1">
+                              🦠 {result.diseases.length} Disease{result.diseases.length > 1 ? 's' : ''} Detected
+                            </p>
+                            <div className="space-y-1">
+                              {result.diseases.slice(0, 2).map((disease, index) => (
+                                <div key={index} className="flex items-center justify-between text-xs text-white">
+                                  <span>{disease.disease}</span>
+                                  <span className="font-semibold">{(disease.confidence * 100).toFixed(0)}%</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {result.deficiencies && result.deficiencies.length > 0 && (
+                          <div className="bg-purple-500 bg-opacity-90 rounded-lg p-2">
+                            <p className="text-white text-sm font-bold mb-1">
+                              💊 {result.deficiencies.length} Deficienc{result.deficiencies.length > 1 ? 'ies' : 'y'}
+                            </p>
+                            <div className="space-y-1">
+                              {result.deficiencies.slice(0, 2).map((def, index) => (
+                                <div key={index} className="flex items-center justify-between text-xs text-white">
+                                  <span>{def.disease}</span>
+                                  <span className="font-semibold">{(def.confidence * 100).toFixed(0)}%</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
             </div>
 
-            <div className="flex gap-2 sm:gap-3 flex-wrap">
-              {!isPaused ? (
-                <>
-                  <button
-                    onClick={captureAndSave}
-                    disabled={!result}
-                    className="flex-1 bg-green-600 text-white py-2.5 sm:py-3 rounded-lg font-medium hover:bg-green-700 transition inline-flex items-center justify-center gap-1.5 sm:gap-2 disabled:opacity-50 disabled:cursor-not-allowed text-sm sm:text-base"
-                  >
-                    <Scan className="w-4 h-4 sm:w-5 sm:h-5" />
-                    Capture & Save
-                  </button>
-                  <button
-                    onClick={stopCamera}
-                    className="px-4 sm:px-6 bg-red-500 text-white py-2.5 sm:py-3 rounded-lg font-medium hover:bg-red-600 transition inline-flex items-center justify-center gap-1.5 sm:gap-2 text-sm sm:text-base"
-                  >
-                    <X className="w-4 h-4 sm:w-5 sm:h-5" />
-                    Stop
-                  </button>
-                </>
-              ) : (
-                <>
-                  <button
-                    onClick={resumeScanning}
-                    className="flex-1 bg-green-600 text-white py-2.5 sm:py-3 rounded-lg font-medium hover:bg-green-700 transition inline-flex items-center justify-center gap-1.5 sm:gap-2 text-sm sm:text-base"
-                  >
-                    <RefreshCw className="w-4 h-4 sm:w-5 sm:h-5" />
-                    Resume
-                  </button>
-                  <button
-                    onClick={downloadCapture}
-                    className="px-4 sm:px-6 bg-blue-500 text-white py-2.5 sm:py-3 rounded-lg font-medium hover:bg-blue-600 transition inline-flex items-center justify-center gap-1.5 sm:gap-2 text-sm sm:text-base"
-                  >
-                    <Download className="w-4 h-4 sm:w-5 sm:h-5" />
-                    Download
-                  </button>
-                </>
-              )}
-            </div>
-
-            {result && (
-              <div className="space-y-2 sm:space-y-3">
-                {!result.is_tea_leaf ? (
-                  <div className="border-2 rounded-xl p-3 sm:p-4 bg-red-50 border-red-300">
-                    <div className="flex items-center gap-2 sm:gap-3">
-                      <AlertTriangle className="w-5 h-5 sm:w-6 sm:h-6 text-red-600 flex-shrink-0" />
-                      <div>
-                        <h3 className="text-sm sm:text-base font-bold text-red-700">Not a Tea Leaf</h3>
-                        <p className="text-xs sm:text-sm text-red-600">
-                          Confidence: {(result.tea_confidence * 100).toFixed(1)}%
-                        </p>
-                      </div>
-                    </div>
-                  </div>
+            {/* Control Buttons */}
+            <div className={`${isFullscreen ? 'absolute bottom-20 left-0 right-0' : ''} p-4 bg-black`}>
+              <div className="max-w-2xl mx-auto flex gap-3">
+                {!isPaused ? (
+                  <>
+                    <button
+                      onClick={captureAndSave}
+                      disabled={!result}
+                      className="flex-1 bg-green-600 text-white py-3 rounded-lg font-medium hover:bg-green-700 transition inline-flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      <Scan className="w-5 h-5" />
+                      Capture & Save
+                    </button>
+                    <button
+                      onClick={stopCamera}
+                      className="px-6 bg-red-500 text-white py-3 rounded-lg font-medium hover:bg-red-600 transition inline-flex items-center justify-center gap-2"
+                    >
+                      <X className="w-5 h-5" />
+                      Stop
+                    </button>
+                  </>
                 ) : (
                   <>
-                    <div className="border rounded-xl p-3 sm:p-4 bg-green-50 border-green-200">
-                      <div className="flex items-center gap-1.5 sm:gap-2 text-green-700">
-                        <CheckCircle className="w-4 h-4 sm:w-5 sm:h-5" />
-                        <span className="text-sm sm:text-base font-medium">
-                          Tea Leaf ({(result.tea_confidence * 100).toFixed(1)}%)
-                        </span>
-                      </div>
-                    </div>
-
-                    {result.diseases && result.diseases.length > 0 && (
-                      <div className="border rounded-xl p-3 sm:p-4 bg-orange-50 border-orange-200">
-                        <h4 className="text-sm sm:text-base font-bold text-orange-700 mb-2">
-                          🦠 {result.diseases.length} Disease{result.diseases.length > 1 ? 's' : ''} Detected
-                        </h4>
-                        <div className="space-y-1.5 sm:space-y-2">
-                          {result.diseases.slice(0, 3).map((disease, index) => (
-                            <div key={index} className="flex items-center justify-between text-xs sm:text-sm">
-                              <span className="font-medium text-gray-700">{disease.disease}</span>
-                              <span className="text-orange-600 font-semibold">{(disease.confidence * 100).toFixed(0)}%</span>
-                            </div>
-                          ))}
-                          {result.diseases.length > 3 && (
-                            <p className="text-xs text-gray-500">+ {result.diseases.length - 3} more</p>
-                          )}
-                        </div>
-                      </div>
-                    )}
-
-                    {result.deficiencies && result.deficiencies.length > 0 && (
-                      <div className="border rounded-xl p-3 sm:p-4 bg-purple-50 border-purple-200">
-                        <h4 className="text-sm sm:text-base font-bold text-purple-700 mb-2">
-                          💊 {result.deficiencies.length} Deficienc{result.deficiencies.length > 1 ? 'ies' : 'y'} Detected
-                        </h4>
-                        <div className="space-y-1.5 sm:space-y-2">
-                          {result.deficiencies.slice(0, 3).map((def, index) => (
-                            <div key={index} className="flex items-center justify-between text-xs sm:text-sm">
-                              <span className="font-medium text-gray-700">{def.disease}</span>
-                              <span className="text-purple-600 font-semibold">{(def.confidence * 100).toFixed(0)}%</span>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-
-                    {result.is_healthy && (
-                      <div className="border rounded-xl p-3 sm:p-4 bg-green-100 border-green-300">
-                        <div className="flex items-center gap-1.5 sm:gap-2 text-green-700">
-                          <CheckCircle className="w-4 h-4 sm:w-5 sm:h-5" />
-                          <span className="text-sm sm:text-base font-medium">Healthy - No Issues Detected</span>
-                        </div>
-                      </div>
-                    )}
+                    <button
+                      onClick={resumeScanning}
+                      className="flex-1 bg-green-600 text-white py-3 rounded-lg font-medium hover:bg-green-700 transition inline-flex items-center justify-center gap-2"
+                    >
+                      <RefreshCw className="w-5 h-5" />
+                      Resume
+                    </button>
+                    <button
+                      onClick={downloadCapture}
+                      className="px-6 bg-blue-500 text-white py-3 rounded-lg font-medium hover:bg-blue-600 transition inline-flex items-center justify-center gap-2"
+                    >
+                      <Download className="w-5 h-5" />
+                      Download
+                    </button>
                   </>
                 )}
               </div>
-            )}
+            </div>
           </div>
         )}
       </div>
@@ -683,4 +690,4 @@ const RealtimeScanComponent = () => {
   );
 };
 
-export default RealtimeScanComponent;
+export default EnhancedRealtimeScan;
