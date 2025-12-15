@@ -11,7 +11,8 @@ import {
   CheckCircle,
   RefreshCw,
   Download,
-  Scan
+  Scan,
+  Smartphone
 } from 'lucide-react';
 
 const RealtimeScanComponent = () => {
@@ -24,6 +25,7 @@ const RealtimeScanComponent = () => {
   const [capturedImage, setCapturedImage] = useState(null);
   const [fps, setFps] = useState(0);
   const [cameraError, setCameraError] = useState(null);
+  const [isMobile, setIsMobile] = useState(false);
   
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
@@ -33,8 +35,18 @@ const RealtimeScanComponent = () => {
   const isScanningRef = useRef(false);
   const lastDetectionTime = useRef(0);
   const fpsCounter = useRef({ frames: 0, lastTime: Date.now() });
+  const detectionHistoryRef = useRef([]);
 
   useEffect(() => {
+    // Detect if mobile device
+    const checkMobile = () => {
+      const mobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+      setIsMobile(mobile);
+      return mobile;
+    };
+    
+    checkMobile();
+
     if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
         (position) => {
@@ -64,16 +76,18 @@ const RealtimeScanComponent = () => {
     setCameraError(null);
     
     try {
+      // Mobile-optimized constraints
       const constraints = {
         video: {
           facingMode: { ideal: 'environment' },
-          width: { ideal: 1280, max: 1920 },
-          height: { ideal: 720, max: 1080 }
+          width: isMobile ? { ideal: 1280 } : { ideal: 1920 },
+          height: isMobile ? { ideal: 720 } : { ideal: 1080 },
+          aspectRatio: { ideal: 16/9 }
         },
         audio: false
       };
 
-      console.log('Requesting camera access...');
+      console.log('Requesting camera access (Mobile:', isMobile, ')...');
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
       
       console.log('Camera access granted!', stream.getVideoTracks());
@@ -82,7 +96,6 @@ const RealtimeScanComponent = () => {
       setIsScanning(true);
       isScanningRef.current = true;
       
-      console.log('Waiting for video element to render...');
       await new Promise(resolve => setTimeout(resolve, 100));
       
       if (!videoRef.current) {
@@ -93,6 +106,10 @@ const RealtimeScanComponent = () => {
 
       const video = videoRef.current;
       video.srcObject = stream;
+      
+      // Force attributes for better mobile compatibility
+      video.setAttribute('playsinline', 'true');
+      video.setAttribute('webkit-playsinline', 'true');
       
       console.log('Stream assigned to video element');
       
@@ -156,6 +173,7 @@ const RealtimeScanComponent = () => {
     setIsScanning(false);
     setIsPaused(false);
     setResult(null);
+    detectionHistoryRef.current = [];
   };
 
   const startDetectionLoop = () => {
@@ -169,8 +187,10 @@ const RealtimeScanComponent = () => {
 
       const now = Date.now();
       
-      // Detect every 1500ms to avoid overwhelming API
-      if (now - lastDetectionTime.current > 1500) {
+      // Mobile: slower detection rate to save battery and bandwidth
+      const detectionInterval = isMobile ? 2000 : 1500;
+      
+      if (now - lastDetectionTime.current > detectionInterval) {
         await performDetection();
         lastDetectionTime.current = now;
       }
@@ -230,15 +250,54 @@ const RealtimeScanComponent = () => {
         
         if (data.success) {
           console.log('Detection result:', data);
-          setResult(data);
-          drawBoundingBoxes(data);
+          
+          // Use detection history to stabilize results (keep last 3 detections)
+          detectionHistoryRef.current.push(data);
+          if (detectionHistoryRef.current.length > 3) {
+            detectionHistoryRef.current.shift();
+          }
+          
+          // Use the most recent detection but keep it stable
+          const stableResult = getMostConsistentResult(detectionHistoryRef.current);
+          setResult(stableResult);
+          drawBoundingBoxes(stableResult);
         }
       } catch (error) {
         console.error('Detection error:', error);
       } finally {
         setIsDetecting(false);
       }
-    }, 'image/jpeg', 0.8);
+    }, 'image/jpeg', isMobile ? 0.7 : 0.8); // Lower quality on mobile to reduce data
+  };
+
+  // Get most consistent detection from recent history
+  const getMostConsistentResult = (history) => {
+    if (history.length === 0) return null;
+    
+    // Return the most recent if we don't have enough history
+    if (history.length < 2) return history[history.length - 1];
+    
+    // Use the latest detection but with accumulated diseases from recent history
+    const latest = history[history.length - 1];
+    
+    // Collect all unique diseases from recent detections with high confidence
+    const allDiseases = new Map();
+    history.forEach(detection => {
+      if (detection.diseases) {
+        detection.diseases.forEach(disease => {
+          const key = disease.disease.toLowerCase();
+          if (!allDiseases.has(key) || allDiseases.get(key).confidence < disease.confidence) {
+            allDiseases.set(key, disease);
+          }
+        });
+      }
+    });
+    
+    // Return latest with enhanced disease list
+    return {
+      ...latest,
+      diseases: Array.from(allDiseases.values()).sort((a, b) => b.confidence - a.confidence)
+    };
   };
 
   const drawBoundingBoxes = (data) => {
@@ -249,7 +308,6 @@ const RealtimeScanComponent = () => {
 
     const ctx = overlay.getContext('2d');
     
-    // Match video display size
     const displayWidth = video.offsetWidth;
     const displayHeight = video.offsetHeight;
     
@@ -289,15 +347,16 @@ const RealtimeScanComponent = () => {
 
       const color = getBoxColor(detection.disease);
 
+      // Thicker lines for mobile
       ctx.strokeStyle = color;
-      ctx.lineWidth = 3;
+      ctx.lineWidth = isMobile ? 4 : 3;
       ctx.strokeRect(scaledX1, scaledY1, width, height);
 
       const label = `${detection.disease} ${(detection.confidence * 100).toFixed(0)}%`;
-      ctx.font = 'bold 14px Arial';
+      ctx.font = isMobile ? 'bold 16px Arial' : 'bold 14px Arial';
       const textMetrics = ctx.measureText(label);
-      const padding = 5;
-      const textHeight = 20;
+      const padding = isMobile ? 6 : 5;
+      const textHeight = isMobile ? 24 : 20;
 
       ctx.fillStyle = color;
       ctx.fillRect(scaledX1, scaledY1 - textHeight - padding, textMetrics.width + padding * 2, textHeight + padding);
@@ -361,6 +420,7 @@ const RealtimeScanComponent = () => {
           inference_time: result?.inference_time || 0,
           inference_engine: result?.inference_engine || 'ONNX',
           source: 'realtime',
+          device: isMobile ? 'mobile' : 'desktop',
           locName: location ? await getLocationName(location.lat, location.lng) : 'Unknown',
           geo: location ? createGeoPoint(location.lat, location.lng) : null,
         };
@@ -429,94 +489,96 @@ const RealtimeScanComponent = () => {
   };
 
   return (
-    <div className="max-w-4xl mx-auto space-y-6">
+    <div className="max-w-4xl mx-auto space-y-4 sm:space-y-6 px-4 sm:px-0">
       <div>
-        <h1 className="text-3xl font-bold text-gray-900">Real-Time Scan</h1>
-        <p className="text-gray-600 mt-1">Point your camera at tea leaves for instant disease detection</p>
+        <div className="flex items-center gap-2 mb-1">
+          <h1 className="text-2xl sm:text-3xl font-bold text-gray-900">Real-Time Scan</h1>
+          {isMobile && <Smartphone className="w-5 h-5 text-green-600" />}
+        </div>
+        <p className="text-sm sm:text-base text-gray-600">Point your camera at tea leaves for instant disease detection</p>
       </div>
 
-      <div className="bg-white rounded-xl border border-gray-200 p-6">
+      <div className="bg-white rounded-xl border border-gray-200 p-4 sm:p-6">
         {!isScanning ? (
-          <div className="text-center py-12">
-            <div className="inline-flex items-center justify-center w-20 h-20 bg-green-100 rounded-full mb-6">
-              <Camera className="w-10 h-10 text-green-600" />
+          <div className="text-center py-8 sm:py-12">
+            <div className="inline-flex items-center justify-center w-16 h-16 sm:w-20 sm:h-20 bg-green-100 rounded-full mb-4 sm:mb-6">
+              <Camera className="w-8 h-8 sm:w-10 sm:h-10 text-green-600" />
             </div>
-            <h3 className="text-xl font-semibold text-gray-900 mb-2">
+            <h3 className="text-lg sm:text-xl font-semibold text-gray-900 mb-2">
               Start Real-Time Detection
             </h3>
-            <p className="text-gray-600 mb-6 max-w-md mx-auto">
-              Use your camera to scan tea leaves in real-time. Allow camera access when prompted.
+            <p className="text-sm sm:text-base text-gray-600 mb-4 sm:mb-6 max-w-md mx-auto">
+              Use your camera to scan tea leaves in real-time. {isMobile ? 'Optimized for mobile devices.' : 'Allow camera access when prompted.'}
             </p>
             
             {cameraError && (
-              <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg text-left max-w-md mx-auto">
-                <div className="flex gap-3">
-                  <AlertTriangle className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" />
-                  <div className="text-sm text-red-800">{cameraError}</div>
+              <div className="mb-4 sm:mb-6 p-3 sm:p-4 bg-red-50 border border-red-200 rounded-lg text-left max-w-md mx-auto">
+                <div className="flex gap-2 sm:gap-3">
+                  <AlertTriangle className="w-4 h-4 sm:w-5 sm:h-5 text-red-600 flex-shrink-0 mt-0.5" />
+                  <div className="text-xs sm:text-sm text-red-800">{cameraError}</div>
                 </div>
               </div>
             )}
             
             <button
               onClick={startCamera}
-              className="bg-green-600 text-white px-8 py-3 rounded-lg font-medium hover:bg-green-700 transition inline-flex items-center gap-2"
+              className="bg-green-600 text-white px-6 sm:px-8 py-2.5 sm:py-3 rounded-lg font-medium hover:bg-green-700 transition inline-flex items-center gap-2 text-sm sm:text-base"
             >
-              <Camera className="w-5 h-5" />
+              <Camera className="w-4 h-4 sm:w-5 sm:h-5" />
               Start Camera
             </button>
             
-            <div className="mt-6 text-sm text-gray-500">
-              <p>💡 Tip: Allow camera permissions when prompted by your browser</p>
+            <div className="mt-4 sm:mt-6 text-xs sm:text-sm text-gray-500">
+              <p>💡 Tip: {isMobile ? 'Hold your phone steady for best results' : 'Allow camera permissions when prompted'}</p>
             </div>
           </div>
         ) : (
-          <div className="space-y-4">
-            <div className="relative bg-black rounded-lg overflow-hidden" style={{ aspectRatio: '16/9', minHeight: '400px' }}>
+          <div className="space-y-3 sm:space-y-4">
+            <div className="relative bg-black rounded-lg overflow-hidden" style={{ aspectRatio: '16/9' }}>
               <video
                 ref={videoRef}
                 autoPlay
                 playsInline
                 muted
                 className="w-full h-full object-contain"
-                style={{ display: 'block', minHeight: '400px' }}
               />
               <canvas
                 ref={overlayCanvasRef}
                 className="absolute top-0 left-0 w-full h-full pointer-events-none"
               />
               
-              <div className="absolute top-4 left-4 bg-black bg-opacity-70 text-white px-3 py-2 rounded-lg text-sm font-mono">
-                {fps} FPS {isDetecting && <Loader className="w-3 h-3 inline animate-spin ml-2" />}
+              <div className="absolute top-2 sm:top-4 left-2 sm:left-4 bg-black bg-opacity-70 text-white px-2 sm:px-3 py-1 sm:py-2 rounded-lg text-xs sm:text-sm font-mono">
+                {fps} FPS {isDetecting && <Loader className="w-2.5 h-2.5 sm:w-3 sm:h-3 inline animate-spin ml-1 sm:ml-2" />}
               </div>
 
-              <div className="absolute top-4 right-4 flex items-center gap-2 bg-black bg-opacity-70 text-white px-3 py-2 rounded-lg">
-                <div className={`w-2 h-2 rounded-full ${isPaused ? 'bg-yellow-500' : 'bg-green-500 animate-pulse'}`} />
-                <span className="text-sm font-medium">{isPaused ? 'Paused' : 'Live'}</span>
+              <div className="absolute top-2 sm:top-4 right-2 sm:right-4 flex items-center gap-1.5 sm:gap-2 bg-black bg-opacity-70 text-white px-2 sm:px-3 py-1 sm:py-2 rounded-lg">
+                <div className={`w-1.5 h-1.5 sm:w-2 sm:h-2 rounded-full ${isPaused ? 'bg-yellow-500' : 'bg-green-500 animate-pulse'}`} />
+                <span className="text-xs sm:text-sm font-medium">{isPaused ? 'Paused' : 'Live'}</span>
               </div>
 
               {capturedImage && (
-                <div className="absolute inset-0 bg-black bg-opacity-95 flex items-center justify-center p-4">
+                <div className="absolute inset-0 bg-black bg-opacity-95 flex items-center justify-center p-2 sm:p-4">
                   <img src={capturedImage} alt="Captured" className="max-w-full max-h-full object-contain rounded" />
                 </div>
               )}
             </div>
 
-            <div className="flex gap-3 flex-wrap">
+            <div className="flex gap-2 sm:gap-3 flex-wrap">
               {!isPaused ? (
                 <>
                   <button
                     onClick={captureAndSave}
                     disabled={!result}
-                    className="flex-1 bg-green-600 text-white py-3 rounded-lg font-medium hover:bg-green-700 transition inline-flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                    className="flex-1 bg-green-600 text-white py-2.5 sm:py-3 rounded-lg font-medium hover:bg-green-700 transition inline-flex items-center justify-center gap-1.5 sm:gap-2 disabled:opacity-50 disabled:cursor-not-allowed text-sm sm:text-base"
                   >
-                    <Scan className="w-5 h-5" />
+                    <Scan className="w-4 h-4 sm:w-5 sm:h-5" />
                     Capture & Save
                   </button>
                   <button
                     onClick={stopCamera}
-                    className="px-6 bg-red-500 text-white py-3 rounded-lg font-medium hover:bg-red-600 transition inline-flex items-center justify-center gap-2"
+                    className="px-4 sm:px-6 bg-red-500 text-white py-2.5 sm:py-3 rounded-lg font-medium hover:bg-red-600 transition inline-flex items-center justify-center gap-1.5 sm:gap-2 text-sm sm:text-base"
                   >
-                    <X className="w-5 h-5" />
+                    <X className="w-4 h-4 sm:w-5 sm:h-5" />
                     Stop
                   </button>
                 </>
@@ -524,16 +586,16 @@ const RealtimeScanComponent = () => {
                 <>
                   <button
                     onClick={resumeScanning}
-                    className="flex-1 bg-green-600 text-white py-3 rounded-lg font-medium hover:bg-green-700 transition inline-flex items-center justify-center gap-2"
+                    className="flex-1 bg-green-600 text-white py-2.5 sm:py-3 rounded-lg font-medium hover:bg-green-700 transition inline-flex items-center justify-center gap-1.5 sm:gap-2 text-sm sm:text-base"
                   >
-                    <RefreshCw className="w-5 h-5" />
+                    <RefreshCw className="w-4 h-4 sm:w-5 sm:h-5" />
                     Resume
                   </button>
                   <button
                     onClick={downloadCapture}
-                    className="px-6 bg-blue-500 text-white py-3 rounded-lg font-medium hover:bg-blue-600 transition inline-flex items-center justify-center gap-2"
+                    className="px-4 sm:px-6 bg-blue-500 text-white py-2.5 sm:py-3 rounded-lg font-medium hover:bg-blue-600 transition inline-flex items-center justify-center gap-1.5 sm:gap-2 text-sm sm:text-base"
                   >
-                    <Download className="w-5 h-5" />
+                    <Download className="w-4 h-4 sm:w-5 sm:h-5" />
                     Download
                   </button>
                 </>
@@ -541,14 +603,14 @@ const RealtimeScanComponent = () => {
             </div>
 
             {result && (
-              <div className="space-y-3">
+              <div className="space-y-2 sm:space-y-3">
                 {!result.is_tea_leaf ? (
-                  <div className="border-2 rounded-xl p-4 bg-red-50 border-red-300">
-                    <div className="flex items-center gap-3">
-                      <AlertTriangle className="w-6 h-6 text-red-600 flex-shrink-0" />
+                  <div className="border-2 rounded-xl p-3 sm:p-4 bg-red-50 border-red-300">
+                    <div className="flex items-center gap-2 sm:gap-3">
+                      <AlertTriangle className="w-5 h-5 sm:w-6 sm:h-6 text-red-600 flex-shrink-0" />
                       <div>
-                        <h3 className="font-bold text-red-700">Not a Tea Leaf</h3>
-                        <p className="text-sm text-red-600">
+                        <h3 className="text-sm sm:text-base font-bold text-red-700">Not a Tea Leaf</h3>
+                        <p className="text-xs sm:text-sm text-red-600">
                           Confidence: {(result.tea_confidence * 100).toFixed(1)}%
                         </p>
                       </div>
@@ -556,25 +618,25 @@ const RealtimeScanComponent = () => {
                   </div>
                 ) : (
                   <>
-                    <div className="border rounded-xl p-4 bg-green-50 border-green-200">
-                      <div className="flex items-center gap-2 text-green-700">
-                        <CheckCircle className="w-5 h-5" />
-                        <span className="font-medium">
+                    <div className="border rounded-xl p-3 sm:p-4 bg-green-50 border-green-200">
+                      <div className="flex items-center gap-1.5 sm:gap-2 text-green-700">
+                        <CheckCircle className="w-4 h-4 sm:w-5 sm:h-5" />
+                        <span className="text-sm sm:text-base font-medium">
                           Tea Leaf ({(result.tea_confidence * 100).toFixed(1)}%)
                         </span>
                       </div>
                     </div>
 
                     {result.diseases && result.diseases.length > 0 && (
-                      <div className="border rounded-xl p-4 bg-orange-50 border-orange-200">
-                        <h4 className="font-bold text-orange-700 mb-2">
+                      <div className="border rounded-xl p-3 sm:p-4 bg-orange-50 border-orange-200">
+                        <h4 className="text-sm sm:text-base font-bold text-orange-700 mb-2">
                           🦠 {result.diseases.length} Disease{result.diseases.length > 1 ? 's' : ''} Detected
                         </h4>
-                        <div className="space-y-2">
+                        <div className="space-y-1.5 sm:space-y-2">
                           {result.diseases.slice(0, 3).map((disease, index) => (
-                            <div key={index} className="flex items-center justify-between text-sm">
+                            <div key={index} className="flex items-center justify-between text-xs sm:text-sm">
                               <span className="font-medium text-gray-700">{disease.disease}</span>
-                              <span className="text-orange-600">{(disease.confidence * 100).toFixed(0)}%</span>
+                              <span className="text-orange-600 font-semibold">{(disease.confidence * 100).toFixed(0)}%</span>
                             </div>
                           ))}
                           {result.diseases.length > 3 && (
@@ -585,15 +647,15 @@ const RealtimeScanComponent = () => {
                     )}
 
                     {result.deficiencies && result.deficiencies.length > 0 && (
-                      <div className="border rounded-xl p-4 bg-purple-50 border-purple-200">
-                        <h4 className="font-bold text-purple-700 mb-2">
+                      <div className="border rounded-xl p-3 sm:p-4 bg-purple-50 border-purple-200">
+                        <h4 className="text-sm sm:text-base font-bold text-purple-700 mb-2">
                           💊 {result.deficiencies.length} Deficienc{result.deficiencies.length > 1 ? 'ies' : 'y'} Detected
                         </h4>
-                        <div className="space-y-2">
+                        <div className="space-y-1.5 sm:space-y-2">
                           {result.deficiencies.slice(0, 3).map((def, index) => (
-                            <div key={index} className="flex items-center justify-between text-sm">
+                            <div key={index} className="flex items-center justify-between text-xs sm:text-sm">
                               <span className="font-medium text-gray-700">{def.disease}</span>
-                              <span className="text-purple-600">{(def.confidence * 100).toFixed(0)}%</span>
+                              <span className="text-purple-600 font-semibold">{(def.confidence * 100).toFixed(0)}%</span>
                             </div>
                           ))}
                         </div>
@@ -601,10 +663,10 @@ const RealtimeScanComponent = () => {
                     )}
 
                     {result.is_healthy && (
-                      <div className="border rounded-xl p-4 bg-green-100 border-green-300">
-                        <div className="flex items-center gap-2 text-green-700">
-                          <CheckCircle className="w-5 h-5" />
-                          <span className="font-medium">Healthy - No Issues Detected</span>
+                      <div className="border rounded-xl p-3 sm:p-4 bg-green-100 border-green-300">
+                        <div className="flex items-center gap-1.5 sm:gap-2 text-green-700">
+                          <CheckCircle className="w-4 h-4 sm:w-5 sm:h-5" />
+                          <span className="text-sm sm:text-base font-medium">Healthy - No Issues Detected</span>
                         </div>
                       </div>
                     )}
