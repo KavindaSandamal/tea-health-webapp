@@ -30,6 +30,7 @@ const RealtimeScanComponent = () => {
   const overlayCanvasRef = useRef(null);
   const streamRef = useRef(null);
   const animationRef = useRef(null);
+  const isScanningRef = useRef(false);
   const lastDetectionTime = useRef(0);
   const fpsCounter = useRef({ frames: 0, lastTime: Date.now() });
 
@@ -47,7 +48,16 @@ const RealtimeScanComponent = () => {
     }
 
     return () => {
-      stopCamera();
+      // Cleanup directly to avoid dependency issues
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => track.stop());
+        streamRef.current = null;
+      }
+      if (animationRef.current) {
+        cancelAnimationFrame(animationRef.current);
+        animationRef.current = null;
+      }
+      isScanningRef.current = false;
     };
   }, []);
 
@@ -55,7 +65,6 @@ const RealtimeScanComponent = () => {
     setCameraError(null);
     
     try {
-      // Request camera permission with detailed constraints
       const constraints = {
         video: {
           facingMode: { ideal: 'environment' },
@@ -80,7 +89,13 @@ const RealtimeScanComponent = () => {
             .then(() => {
               console.log('Video playing');
               setIsScanning(true);
-              startDetectionLoop();
+              isScanningRef.current = true;
+              
+              // Start detection loop after a small delay to ensure state is updated
+              setTimeout(() => {
+                startDetectionLoop();
+              }, 100);
+              
               toast.success('Camera started successfully!');
             })
             .catch(err => {
@@ -111,6 +126,8 @@ const RealtimeScanComponent = () => {
   const stopCamera = () => {
     console.log('Stopping camera...');
     
+    isScanningRef.current = false;
+    
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(track => {
         track.stop();
@@ -135,8 +152,10 @@ const RealtimeScanComponent = () => {
 
   const startDetectionLoop = () => {
     const detectFrame = async () => {
-      if (!isScanning || isPaused) {
-        animationRef.current = requestAnimationFrame(detectFrame);
+      if (!isScanningRef.current || isPaused) {
+        if (isScanningRef.current) {
+          animationRef.current = requestAnimationFrame(detectFrame);
+        }
         return;
       }
 
