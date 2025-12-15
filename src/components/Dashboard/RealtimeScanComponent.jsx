@@ -48,7 +48,6 @@ const RealtimeScanComponent = () => {
     }
 
     return () => {
-      // Cleanup directly to avoid dependency issues
       if (streamRef.current) {
         streamRef.current.getTracks().forEach(track => track.stop());
         streamRef.current = null;
@@ -79,16 +78,11 @@ const RealtimeScanComponent = () => {
       
       console.log('Camera access granted!', stream.getVideoTracks());
       
-      // Store stream first
       streamRef.current = stream;
-      
-      // Set scanning to true to render video element
       setIsScanning(true);
       isScanningRef.current = true;
       
       console.log('Waiting for video element to render...');
-      
-      // Wait for video element to be rendered
       await new Promise(resolve => setTimeout(resolve, 100));
       
       if (!videoRef.current) {
@@ -98,19 +92,15 @@ const RealtimeScanComponent = () => {
       }
 
       const video = videoRef.current;
-      
-      // Set stream to video
       video.srcObject = stream;
       
       console.log('Stream assigned to video element');
       
-      // Wait for video to be ready and play
       try {
         await video.play();
         console.log('Video is now playing!');
         console.log('Video dimensions:', video.videoWidth, 'x', video.videoHeight);
         
-        // Start detection loop
         setTimeout(() => {
           startDetectionLoop();
         }, 100);
@@ -179,8 +169,8 @@ const RealtimeScanComponent = () => {
 
       const now = Date.now();
       
-      // Detect every 1000ms (1 FPS) to avoid overwhelming API
-      if (now - lastDetectionTime.current > 1000) {
+      // Detect every 1500ms to avoid overwhelming API
+      if (now - lastDetectionTime.current > 1500) {
         await performDetection();
         lastDetectionTime.current = now;
       }
@@ -206,7 +196,6 @@ const RealtimeScanComponent = () => {
     const canvas = canvasRef.current;
     const ctx = canvas.getContext('2d');
 
-    // Check if video is ready
     if (video.readyState !== video.HAVE_ENOUGH_DATA) return;
 
     setIsDetecting(true);
@@ -231,20 +220,25 @@ const RealtimeScanComponent = () => {
           body: formData,
         });
 
-        if (response.ok) {
-          const data = await response.json();
-          
-          if (data.success) {
-            setResult(data);
-            drawBoundingBoxes(data);
-          }
+        if (!response.ok) {
+          console.warn('API returned non-OK status:', response.status);
+          setIsDetecting(false);
+          return;
+        }
+
+        const data = await response.json();
+        
+        if (data.success) {
+          console.log('Detection result:', data);
+          setResult(data);
+          drawBoundingBoxes(data);
         }
       } catch (error) {
         console.error('Detection error:', error);
       } finally {
         setIsDetecting(false);
       }
-    }, 'image/jpeg', 0.7);
+    }, 'image/jpeg', 0.8);
   };
 
   const drawBoundingBoxes = (data) => {
@@ -254,17 +248,24 @@ const RealtimeScanComponent = () => {
     if (!overlay || !video) return;
 
     const ctx = overlay.getContext('2d');
-    overlay.width = video.offsetWidth;
-    overlay.height = video.offsetHeight;
+    
+    // Match video display size
+    const displayWidth = video.offsetWidth;
+    const displayHeight = video.offsetHeight;
+    
+    overlay.width = displayWidth;
+    overlay.height = displayHeight;
     ctx.clearRect(0, 0, overlay.width, overlay.height);
 
     const YOLO_SIZE = 640;
-    const scaleX = overlay.width / YOLO_SIZE;
-    const scaleY = overlay.height / YOLO_SIZE;
+    const scaleX = displayWidth / YOLO_SIZE;
+    const scaleY = displayHeight / YOLO_SIZE;
 
     const diseases = Array.isArray(data.diseases) ? data.diseases : [];
     const deficiencies = Array.isArray(data.deficiencies) ? data.deficiencies : [];
     const allDetections = [...diseases, ...deficiencies];
+
+    console.log(`Drawing ${allDetections.length} detections`);
 
     allDetections.forEach((detection) => {
       if (!detection || !detection.bbox) return;
@@ -288,8 +289,6 @@ const RealtimeScanComponent = () => {
 
       const color = getBoxColor(detection.disease);
 
-      ctx.shadowColor = color;
-      ctx.shadowBlur = 8;
       ctx.strokeStyle = color;
       ctx.lineWidth = 3;
       ctx.strokeRect(scaledX1, scaledY1, width, height);
@@ -300,7 +299,6 @@ const RealtimeScanComponent = () => {
       const padding = 5;
       const textHeight = 20;
 
-      ctx.shadowBlur = 0;
       ctx.fillStyle = color;
       ctx.fillRect(scaledX1, scaledY1 - textHeight - padding, textMetrics.width + padding * 2, textHeight + padding);
 
@@ -570,13 +568,32 @@ const RealtimeScanComponent = () => {
                     {result.diseases && result.diseases.length > 0 && (
                       <div className="border rounded-xl p-4 bg-orange-50 border-orange-200">
                         <h4 className="font-bold text-orange-700 mb-2">
-                          🦠 {result.diseases.length} Disease{result.diseases.length > 1 ? 's' : ''}
+                          🦠 {result.diseases.length} Disease{result.diseases.length > 1 ? 's' : ''} Detected
                         </h4>
                         <div className="space-y-2">
                           {result.diseases.slice(0, 3).map((disease, index) => (
                             <div key={index} className="flex items-center justify-between text-sm">
                               <span className="font-medium text-gray-700">{disease.disease}</span>
                               <span className="text-orange-600">{(disease.confidence * 100).toFixed(0)}%</span>
+                            </div>
+                          ))}
+                          {result.diseases.length > 3 && (
+                            <p className="text-xs text-gray-500">+ {result.diseases.length - 3} more</p>
+                          )}
+                        </div>
+                      </div>
+                    )}
+
+                    {result.deficiencies && result.deficiencies.length > 0 && (
+                      <div className="border rounded-xl p-4 bg-purple-50 border-purple-200">
+                        <h4 className="font-bold text-purple-700 mb-2">
+                          💊 {result.deficiencies.length} Deficienc{result.deficiencies.length > 1 ? 'ies' : 'y'} Detected
+                        </h4>
+                        <div className="space-y-2">
+                          {result.deficiencies.slice(0, 3).map((def, index) => (
+                            <div key={index} className="flex items-center justify-between text-sm">
+                              <span className="font-medium text-gray-700">{def.disease}</span>
+                              <span className="text-purple-600">{(def.confidence * 100).toFixed(0)}%</span>
                             </div>
                           ))}
                         </div>
@@ -587,7 +604,7 @@ const RealtimeScanComponent = () => {
                       <div className="border rounded-xl p-4 bg-green-100 border-green-300">
                         <div className="flex items-center gap-2 text-green-700">
                           <CheckCircle className="w-5 h-5" />
-                          <span className="font-medium">Healthy - No Issues</span>
+                          <span className="font-medium">Healthy - No Issues Detected</span>
                         </div>
                       </div>
                     )}
