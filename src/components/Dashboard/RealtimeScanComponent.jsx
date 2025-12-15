@@ -226,7 +226,7 @@ const RealtimeScanComponent = () => {
         const formData = new FormData();
         formData.append('image', file);
 
-        const response = await fetch('https://ed547b766da6.ngrok-free.app/predict', {
+        const response = await fetch('https://d5365df2e6a6.ngrok-free.app/predict', {
           method: 'POST',
           body: formData,
         });
