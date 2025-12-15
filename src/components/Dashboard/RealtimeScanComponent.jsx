@@ -11,18 +11,19 @@ import {
   CheckCircle,
   RefreshCw,
   Download,
-  Play,
-  Pause
+  Scan
 } from 'lucide-react';
 
 const RealtimeScanComponent = () => {
   const { currentUser } = useAuth();
   const [isScanning, setIsScanning] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
+  const [isDetecting, setIsDetecting] = useState(false);
   const [result, setResult] = useState(null);
   const [location, setLocation] = useState(null);
   const [capturedImage, setCapturedImage] = useState(null);
   const [fps, setFps] = useState(0);
+  const [cameraError, setCameraError] = useState(null);
   
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
@@ -33,7 +34,6 @@ const RealtimeScanComponent = () => {
   const fpsCounter = useRef({ frames: 0, lastTime: Date.now() });
 
   useEffect(() => {
-    // Get location on mount
     if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
         (position) => {
@@ -52,41 +52,85 @@ const RealtimeScanComponent = () => {
   }, []);
 
   const startCamera = async () => {
+    setCameraError(null);
+    
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { 
-          facingMode: 'environment', // Use back camera on mobile
-          width: { ideal: 1280 },
-          height: { ideal: 720 }
-        }
-      });
+      // Request camera permission with detailed constraints
+      const constraints = {
+        video: {
+          facingMode: { ideal: 'environment' },
+          width: { ideal: 1280, max: 1920 },
+          height: { ideal: 720, max: 1080 }
+        },
+        audio: false
+      };
+
+      console.log('Requesting camera access...');
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      
+      console.log('Camera access granted!', stream.getVideoTracks());
       
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         streamRef.current = stream;
-        setIsScanning(true);
         
         videoRef.current.onloadedmetadata = () => {
-          videoRef.current.play();
-          startDetectionLoop();
+          console.log('Video metadata loaded');
+          videoRef.current.play()
+            .then(() => {
+              console.log('Video playing');
+              setIsScanning(true);
+              startDetectionLoop();
+              toast.success('Camera started successfully!');
+            })
+            .catch(err => {
+              console.error('Error playing video:', err);
+              toast.error('Failed to start video playback');
+            });
         };
       }
     } catch (error) {
-      console.error('Error accessing camera:', error);
-      toast.error('Failed to access camera. Please check permissions.');
+      console.error('Camera access error:', error);
+      let errorMessage = 'Failed to access camera. ';
+      
+      if (error.name === 'NotAllowedError') {
+        errorMessage += 'Please allow camera permissions in your browser settings.';
+      } else if (error.name === 'NotFoundError') {
+        errorMessage += 'No camera found on your device.';
+      } else if (error.name === 'NotReadableError') {
+        errorMessage += 'Camera is already in use by another application.';
+      } else {
+        errorMessage += error.message || 'Unknown error occurred.';
+      }
+      
+      setCameraError(errorMessage);
+      toast.error(errorMessage);
     }
   };
 
   const stopCamera = () => {
+    console.log('Stopping camera...');
+    
     if (streamRef.current) {
-      streamRef.current.getTracks().forEach(track => track.stop());
+      streamRef.current.getTracks().forEach(track => {
+        track.stop();
+        console.log('Track stopped:', track);
+      });
       streamRef.current = null;
     }
+    
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
+    
     if (animationRef.current) {
       cancelAnimationFrame(animationRef.current);
+      animationRef.current = null;
     }
+    
     setIsScanning(false);
     setIsPaused(false);
+    setResult(null);
   };
 
   const startDetectionLoop = () => {
@@ -98,8 +142,8 @@ const RealtimeScanComponent = () => {
 
       const now = Date.now();
       
-      // Limit detection to every 500ms (2 FPS) to avoid overwhelming the API
-      if (now - lastDetectionTime.current > 500) {
+      // Detect every 1000ms (1 FPS) to avoid overwhelming API
+      if (now - lastDetectionTime.current > 1000) {
         await performDetection();
         lastDetectionTime.current = now;
       }
@@ -119,22 +163,26 @@ const RealtimeScanComponent = () => {
   };
 
   const performDetection = async () => {
-    if (!videoRef.current || !canvasRef.current) return;
+    if (!videoRef.current || !canvasRef.current || isDetecting) return;
 
     const video = videoRef.current;
     const canvas = canvasRef.current;
     const ctx = canvas.getContext('2d');
 
-    // Set canvas size to match video
+    // Check if video is ready
+    if (video.readyState !== video.HAVE_ENOUGH_DATA) return;
+
+    setIsDetecting(true);
+
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
-
-    // Draw current frame
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-    // Convert to blob
     canvas.toBlob(async (blob) => {
-      if (!blob) return;
+      if (!blob) {
+        setIsDetecting(false);
+        return;
+      }
 
       try {
         const file = new File([blob], 'frame.jpg', { type: 'image/jpeg' });
@@ -146,18 +194,20 @@ const RealtimeScanComponent = () => {
           body: formData,
         });
 
-        if (!response.ok) return;
-
-        const data = await response.json();
-        
-        if (data.success) {
-          setResult(data);
-          drawBoundingBoxes(data);
+        if (response.ok) {
+          const data = await response.json();
+          
+          if (data.success) {
+            setResult(data);
+            drawBoundingBoxes(data);
+          }
         }
       } catch (error) {
         console.error('Detection error:', error);
+      } finally {
+        setIsDetecting(false);
       }
-    }, 'image/jpeg', 0.8);
+    }, 'image/jpeg', 0.7);
   };
 
   const drawBoundingBoxes = (data) => {
@@ -167,12 +217,8 @@ const RealtimeScanComponent = () => {
     if (!overlay || !video) return;
 
     const ctx = overlay.getContext('2d');
-    
-    // Match overlay size to video display size
     overlay.width = video.offsetWidth;
     overlay.height = video.offsetHeight;
-
-    // Clear previous drawings
     ctx.clearRect(0, 0, overlay.width, overlay.height);
 
     const YOLO_SIZE = 640;
@@ -189,10 +235,8 @@ const RealtimeScanComponent = () => {
       let bbox;
       if (Array.isArray(detection.bbox)) {
         bbox = detection.bbox;
-      } else if (typeof detection.bbox === 'object') {
-        if ('x1' in detection.bbox) {
-          bbox = [detection.bbox.x1, detection.bbox.y1, detection.bbox.x2, detection.bbox.y2];
-        }
+      } else if (typeof detection.bbox === 'object' && 'x1' in detection.bbox) {
+        bbox = [detection.bbox.x1, detection.bbox.y1, detection.bbox.x2, detection.bbox.y2];
       }
 
       if (!bbox || bbox.length !== 4) return;
@@ -207,26 +251,24 @@ const RealtimeScanComponent = () => {
 
       const color = getBoxColor(detection.disease);
 
-      // Draw box with glow effect
       ctx.shadowColor = color;
-      ctx.shadowBlur = 10;
+      ctx.shadowBlur = 8;
       ctx.strokeStyle = color;
       ctx.lineWidth = 3;
       ctx.strokeRect(scaledX1, scaledY1, width, height);
 
-      // Draw label
       const label = `${detection.disease} ${(detection.confidence * 100).toFixed(0)}%`;
-      ctx.font = 'bold 16px Arial';
+      ctx.font = 'bold 14px Arial';
       const textMetrics = ctx.measureText(label);
-      const padding = 6;
-      const textHeight = 24;
+      const padding = 5;
+      const textHeight = 20;
 
       ctx.shadowBlur = 0;
       ctx.fillStyle = color;
       ctx.fillRect(scaledX1, scaledY1 - textHeight - padding, textMetrics.width + padding * 2, textHeight + padding);
 
       ctx.fillStyle = 'white';
-      ctx.fillText(label, scaledX1 + padding, scaledY1 - padding - 4);
+      ctx.fillText(label, scaledX1 + padding, scaledY1 - padding - 3);
     });
   };
 
@@ -264,7 +306,7 @@ const RealtimeScanComponent = () => {
     setCapturedImage(dataUrl);
     setIsPaused(true);
 
-    toast.success('Frame captured! Processing...');
+    toast.info('Saving scan...');
 
     try {
       canvas.toBlob(async (blob) => {
@@ -348,6 +390,7 @@ const RealtimeScanComponent = () => {
     link.href = capturedImage;
     link.download = `tea-scan-${Date.now()}.jpg`;
     link.click();
+    toast.success('Image downloaded!');
   };
 
   return (
@@ -360,13 +403,25 @@ const RealtimeScanComponent = () => {
       <div className="bg-white rounded-xl border border-gray-200 p-6">
         {!isScanning ? (
           <div className="text-center py-12">
-            <Camera className="w-20 h-20 text-gray-400 mx-auto mb-6" />
+            <div className="inline-flex items-center justify-center w-20 h-20 bg-green-100 rounded-full mb-6">
+              <Camera className="w-10 h-10 text-green-600" />
+            </div>
             <h3 className="text-xl font-semibold text-gray-900 mb-2">
               Start Real-Time Detection
             </h3>
-            <p className="text-gray-600 mb-6">
-              Use your camera to scan tea leaves in real-time
+            <p className="text-gray-600 mb-6 max-w-md mx-auto">
+              Use your camera to scan tea leaves in real-time. Allow camera access when prompted.
             </p>
+            
+            {cameraError && (
+              <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg text-left max-w-md mx-auto">
+                <div className="flex gap-3">
+                  <AlertTriangle className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" />
+                  <div className="text-sm text-red-800">{cameraError}</div>
+                </div>
+              </div>
+            )}
+            
             <button
               onClick={startCamera}
               className="bg-green-600 text-white px-8 py-3 rounded-lg font-medium hover:bg-green-700 transition inline-flex items-center gap-2"
@@ -374,10 +429,13 @@ const RealtimeScanComponent = () => {
               <Camera className="w-5 h-5" />
               Start Camera
             </button>
+            
+            <div className="mt-6 text-sm text-gray-500">
+              <p>💡 Tip: Allow camera permissions when prompted by your browser</p>
+            </div>
           </div>
         ) : (
           <div className="space-y-4">
-            {/* Camera View */}
             <div className="relative bg-black rounded-lg overflow-hidden" style={{ aspectRatio: '16/9' }}>
               <video
                 ref={videoRef}
@@ -391,34 +449,31 @@ const RealtimeScanComponent = () => {
                 className="absolute top-0 left-0 w-full h-full pointer-events-none"
               />
               
-              {/* FPS Counter */}
               <div className="absolute top-4 left-4 bg-black bg-opacity-70 text-white px-3 py-2 rounded-lg text-sm font-mono">
-                {fps} FPS
+                {fps} FPS {isDetecting && <Loader className="w-3 h-3 inline animate-spin ml-2" />}
               </div>
 
-              {/* Status Indicator */}
               <div className="absolute top-4 right-4 flex items-center gap-2 bg-black bg-opacity-70 text-white px-3 py-2 rounded-lg">
                 <div className={`w-2 h-2 rounded-full ${isPaused ? 'bg-yellow-500' : 'bg-green-500 animate-pulse'}`} />
-                <span className="text-sm font-medium">{isPaused ? 'Paused' : 'Scanning'}</span>
+                <span className="text-sm font-medium">{isPaused ? 'Paused' : 'Live'}</span>
               </div>
 
-              {/* Captured Image Overlay */}
               {capturedImage && (
-                <div className="absolute inset-0 bg-black bg-opacity-90 flex items-center justify-center">
-                  <img src={capturedImage} alt="Captured" className="max-w-full max-h-full object-contain" />
+                <div className="absolute inset-0 bg-black bg-opacity-95 flex items-center justify-center p-4">
+                  <img src={capturedImage} alt="Captured" className="max-w-full max-h-full object-contain rounded" />
                 </div>
               )}
             </div>
 
-            {/* Controls */}
             <div className="flex gap-3 flex-wrap">
               {!isPaused ? (
                 <>
                   <button
                     onClick={captureAndSave}
-                    className="flex-1 bg-green-600 text-white py-3 rounded-lg font-medium hover:bg-green-700 transition inline-flex items-center justify-center gap-2"
+                    disabled={!result}
+                    className="flex-1 bg-green-600 text-white py-3 rounded-lg font-medium hover:bg-green-700 transition inline-flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
-                    <Camera className="w-5 h-5" />
+                    <Scan className="w-5 h-5" />
                     Capture & Save
                   </button>
                   <button
@@ -436,7 +491,7 @@ const RealtimeScanComponent = () => {
                     className="flex-1 bg-green-600 text-white py-3 rounded-lg font-medium hover:bg-green-700 transition inline-flex items-center justify-center gap-2"
                   >
                     <RefreshCw className="w-5 h-5" />
-                    Resume Scanning
+                    Resume
                   </button>
                   <button
                     onClick={downloadCapture}
@@ -449,7 +504,6 @@ const RealtimeScanComponent = () => {
               )}
             </div>
 
-            {/* Detection Results */}
             {result && (
               <div className="space-y-3">
                 {!result.is_tea_leaf ? (
@@ -470,7 +524,7 @@ const RealtimeScanComponent = () => {
                       <div className="flex items-center gap-2 text-green-700">
                         <CheckCircle className="w-5 h-5" />
                         <span className="font-medium">
-                          Tea Leaf Detected ({(result.tea_confidence * 100).toFixed(1)}%)
+                          Tea Leaf ({(result.tea_confidence * 100).toFixed(1)}%)
                         </span>
                       </div>
                     </div>
@@ -478,7 +532,7 @@ const RealtimeScanComponent = () => {
                     {result.diseases && result.diseases.length > 0 && (
                       <div className="border rounded-xl p-4 bg-orange-50 border-orange-200">
                         <h4 className="font-bold text-orange-700 mb-2">
-                          🦠 {result.diseases.length} Disease{result.diseases.length > 1 ? 's' : ''} Detected
+                          🦠 {result.diseases.length} Disease{result.diseases.length > 1 ? 's' : ''}
                         </h4>
                         <div className="space-y-2">
                           {result.diseases.slice(0, 3).map((disease, index) => (
@@ -495,7 +549,7 @@ const RealtimeScanComponent = () => {
                       <div className="border rounded-xl p-4 bg-green-100 border-green-300">
                         <div className="flex items-center gap-2 text-green-700">
                           <CheckCircle className="w-5 h-5" />
-                          <span className="font-medium">Healthy Leaf - No Issues Detected</span>
+                          <span className="font-medium">Healthy - No Issues</span>
                         </div>
                       </div>
                     )}
