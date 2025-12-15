@@ -79,55 +79,38 @@ const RealtimeScanComponent = () => {
       
       console.log('Camera access granted!', stream.getVideoTracks());
       
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        streamRef.current = stream;
+      if (!videoRef.current) {
+        console.error('Video ref is null!');
+        toast.error('Video element not found');
+        return;
+      }
+
+      const video = videoRef.current;
+      
+      // Set stream
+      video.srcObject = stream;
+      streamRef.current = stream;
+      
+      console.log('Stream assigned to video element');
+      
+      // Wait for video to be ready and play
+      try {
+        await video.play();
+        console.log('Video is now playing!');
+        console.log('Video dimensions:', video.videoWidth, 'x', video.videoHeight);
         
-        // Force video attributes
-        videoRef.current.setAttribute('playsinline', '');
-        videoRef.current.setAttribute('autoplay', '');
-        videoRef.current.muted = true;
+        setIsScanning(true);
+        isScanningRef.current = true;
         
-        // Add multiple event listeners for better compatibility
-        const handleCanPlay = () => {
-          console.log('Video can play');
-          console.log('Video dimensions:', videoRef.current.videoWidth, 'x', videoRef.current.videoHeight);
-          
-          videoRef.current.play()
-            .then(() => {
-              console.log('Video playing successfully');
-              setIsScanning(true);
-              isScanningRef.current = true;
-              
-              // Start detection loop after a small delay
-              setTimeout(() => {
-                startDetectionLoop();
-              }, 100);
-              
-              toast.success('Camera started successfully!');
-            })
-            .catch(err => {
-              console.error('Error playing video:', err);
-              toast.error('Failed to start video playback: ' + err.message);
-            });
-        };
-        
-        videoRef.current.onloadedmetadata = () => {
-          console.log('Video metadata loaded');
-          console.log('ReadyState:', videoRef.current.readyState);
-        };
-        
-        videoRef.current.oncanplay = handleCanPlay;
-        
-        // Fallback: try to play immediately
+        // Start detection loop
         setTimeout(() => {
-          if (videoRef.current && videoRef.current.paused) {
-            console.log('Attempting immediate play...');
-            videoRef.current.play().catch(err => {
-              console.error('Immediate play failed:', err);
-            });
-          }
-        }, 500);
+          startDetectionLoop();
+        }, 100);
+        
+        toast.success('Camera started successfully!');
+      } catch (playError) {
+        console.error('Failed to play video:', playError);
+        toast.error('Failed to start video: ' + playError.message);
       }
     } catch (error) {
       console.error('Camera access error:', error);
