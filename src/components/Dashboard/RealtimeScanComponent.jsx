@@ -79,17 +79,28 @@ const RealtimeScanComponent = () => {
       
       console.log('Camera access granted!', stream.getVideoTracks());
       
+      // Store stream first
+      streamRef.current = stream;
+      
+      // Set scanning to true to render video element
+      setIsScanning(true);
+      isScanningRef.current = true;
+      
+      console.log('Waiting for video element to render...');
+      
+      // Wait for video element to be rendered
+      await new Promise(resolve => setTimeout(resolve, 100));
+      
       if (!videoRef.current) {
-        console.error('Video ref is null!');
-        toast.error('Video element not found');
+        console.error('Video ref is still null after waiting!');
+        toast.error('Failed to create video element');
         return;
       }
 
       const video = videoRef.current;
       
-      // Set stream
+      // Set stream to video
       video.srcObject = stream;
-      streamRef.current = stream;
       
       console.log('Stream assigned to video element');
       
@@ -98,9 +109,6 @@ const RealtimeScanComponent = () => {
         await video.play();
         console.log('Video is now playing!');
         console.log('Video dimensions:', video.videoWidth, 'x', video.videoHeight);
-        
-        setIsScanning(true);
-        isScanningRef.current = true;
         
         // Start detection loop
         setTimeout(() => {
@@ -128,6 +136,8 @@ const RealtimeScanComponent = () => {
       
       setCameraError(errorMessage);
       toast.error(errorMessage);
+      setIsScanning(false);
+      isScanningRef.current = false;
     }
   };
 
