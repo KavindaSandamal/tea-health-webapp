@@ -81,7 +81,7 @@ const EnhancedRealtimeScan = () => {
 
   const checkApiHealth = async () => {
     try {
-      const response = await fetch('https://d5365df2e6a6.ngrok-free.app/health', {
+      const response = await fetch('https://updates-hammer-superintendent-omissions.trycloudflare.com/health', {
         method: 'GET',
       });
       setApiStatus(response.ok ? 'online' : 'offline');
@@ -247,7 +247,7 @@ const EnhancedRealtimeScan = () => {
         const formData = new FormData();
         formData.append('image', file);
 
-        const response = await fetch('https://d5365df2e6a6.ngrok-free.app/predict', {
+        const response = await fetch('https://updates-hammer-superintendent-omissions.trycloudflare.com/predict', {
           method: 'POST',
           body: formData,
         });
