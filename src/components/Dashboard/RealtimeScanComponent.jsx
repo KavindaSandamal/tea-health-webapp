@@ -81,7 +81,7 @@ const EnhancedRealtimeScan = () => {
 
   const checkApiHealth = async () => {
     try {
-      const response = await fetch('https://updates-hammer-superintendent-omissions.trycloudflare.com/health', {
+      const response = await fetch('https://adventures-vbulletin-adopt-standings.trycloudflare.com/health', {
         method: 'GET',
       });
       setApiStatus(response.ok ? 'online' : 'offline');
@@ -247,7 +247,7 @@ const EnhancedRealtimeScan = () => {
         const formData = new FormData();
         formData.append('image', file);
 
-        const response = await fetch('https://updates-hammer-superintendent-omissions.trycloudflare.com/predict', {
+        const response = await fetch('https://adventures-vbulletin-adopt-standings.trycloudflare.com/predict', {
           method: 'POST',
           body: formData,
         });
