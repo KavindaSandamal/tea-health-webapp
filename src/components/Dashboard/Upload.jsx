@@ -277,7 +277,7 @@ const UploadComponent = () => {
       const formData = new FormData();
       formData.append('image', fileToSend);
 
-      const response = await fetch('https://adventures-vbulletin-adopt-standings.trycloudflare.com/predict', {
+      const response = await fetch('https://explaining-affair-char-alone.trycloudflare.com/predict', {
         method: 'POST',
         body: formData,
       });
